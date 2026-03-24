@@ -187,6 +187,7 @@ export function executeCode(code: string, table: DataTable): ExecutionResult {
     // 用 Function 构造器执行（受控作用域，注入标准模块）
     const fn = new Function(
       '__data', 'console', 'Math', 'JSON', 'Array', 'Object', 'Number', 'String', 'Boolean', 'Date', 'isNaN', 'parseInt', 'parseFloat', 'Infinity', 'NaN', 'undefined',
+      'max', 'min', 'abs', 'floor', 'ceil', 'round', 'sqrt', 'pow',
       // 标准模块注入
       'scanAll', 'checkValue', 'checkMultiValues',
       'detectTransition', 'detectMultiTransition',
@@ -201,6 +202,7 @@ export function executeCode(code: string, table: DataTable): ExecutionResult {
 
     const result = fn(
       data, safeConsole, Math, JSON, Array, Object, Number, String, Boolean, Date, isNaN, parseInt, parseFloat, Infinity, NaN, undefined,
+      Math.max, Math.min, Math.abs, Math.floor, Math.ceil, Math.round, Math.sqrt, Math.pow,
       // 标准模块函数
       scanAll, checkValue, checkMultiValues,
       detectTransition, detectMultiTransition,
