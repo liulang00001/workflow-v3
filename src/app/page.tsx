@@ -50,6 +50,10 @@ export default function Home() {
   const [saveName, setSaveName] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
 
+  // === 生成进度流 ===
+  const [streamLog, setStreamLog] = useState<Array<{ type: 'progress' | 'token' | 'error'; text: string }>>([]);
+  const streamLogRef = useRef<HTMLDivElement>(null);
+
   const loadScriptList = useCallback(async () => {
     try {
       const res = await fetch('/api/scripts');
@@ -68,6 +72,13 @@ export default function Home() {
       setJsonError(null);
     }
   }, [workflowDef]);
+
+  // 流日志自动滚动到底部
+  useEffect(() => {
+    if (streamLogRef.current) {
+      streamLogRef.current.scrollTop = streamLogRef.current.scrollHeight;
+    }
+  }, [streamLog]);
 
   const handleSaveScript = useCallback(async () => {
     if (!saveName.trim() || !code.trim()) return;
@@ -90,11 +101,18 @@ export default function Home() {
     }
   }, [saveName, code, loadScriptList]);
 
-  // === 步骤 1: 自然语言 → JSON 工作流定义 → 流程图 ===
+  // === 步骤 1: 自然语言 → JSON 工作流定义 → 流程图（SSE 流式） ===
   const handleGenerate = useCallback(async () => {
     if (!description.trim()) return;
+
+    // 清空旧状态，让流式日志面板可以显示
     setStatus('generating');
     setError(null);
+    setStreamLog([]);
+    setFlowChart(null);      // ← 关键：清空旧流程图，触发流式面板显示
+    setWorkflowDef(null);
+    setCode('');
+    setActiveTab('flow');
 
     try {
       const res = await fetch('/api/generate', {
@@ -102,20 +120,60 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ description }),
       });
-      const json = await res.json();
-      if (!json.success) throw new Error(json.error);
 
-      const wfDef: WorkflowDefinition = json.workflowDef;
+      if (!res.body) throw new Error('不支持流式响应');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let wfDef: WorkflowDefinition | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() ?? '';
+
+        for (const block of blocks) {
+          const line = block.trim();
+          if (!line.startsWith('data:')) continue;
+          const raw = line.slice(5).trim();
+          try {
+            const msg = JSON.parse(raw);
+            if (msg.type === 'progress') {
+              setStreamLog(prev => [...prev, { type: 'progress', text: msg.message }]);
+            } else if (msg.type === 'token') {
+              setStreamLog(prev => {
+                const last = prev[prev.length - 1];
+                if (last?.type === 'token') {
+                  return [...prev.slice(0, -1), { type: 'token', text: last.text + msg.content }];
+                }
+                return [...prev, { type: 'token', text: msg.content }];
+              });
+            } else if (msg.type === 'error') {
+              throw new Error(msg.error);
+            } else if (msg.type === 'done') {
+              wfDef = msg.workflowDef;
+            }
+          } catch (parseErr) {
+            if (parseErr instanceof SyntaxError) continue;
+            throw parseErr;
+          }
+        }
+      }
+
+      if (!wfDef) throw new Error('未收到工作流定义');
+
       setWorkflowDef(wfDef);
-
-      // 从 JSON 生成流程图
       const chart = workflowToFlowChart(wfDef);
       setFlowChart(chart);
-      setActiveTab('flow');
 
       // 自动生成 TS 代码
       setStatus('generating-code');
-      setCode(''); // 清除旧代码，避免 JSON 和代码不匹配
+      setStreamLog(prev => [...prev, { type: 'progress', text: '正在生成 TypeScript 代码...' }]);
+
       const codeRes = await fetch('/api/generate-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -124,11 +182,13 @@ export default function Home() {
       const codeJson = await codeRes.json();
       if (codeJson.success) {
         setCode(codeJson.code);
+        setStreamLog(prev => [...prev, { type: 'progress', text: `✓ 全部完成，代码 ${codeJson.code.length} 字符` }]);
       } else {
         setError(`代码生成失败: ${codeJson.error}`);
       }
     } catch (e) {
       setError(String(e));
+      setStreamLog(prev => [...prev, { type: 'error', text: String(e) }]);
     } finally {
       setStatus('idle');
     }
@@ -336,6 +396,8 @@ export default function Home() {
     setCode(newCode);
   }, []);
 
+  const isGenerating = status === 'generating' || status === 'generating-code';
+
   return (
     <div className="h-screen flex flex-col">
       {/* 顶部栏 */}
@@ -380,7 +442,7 @@ export default function Home() {
             />
             <button
               onClick={handleGenerate}
-              disabled={!description.trim() || status === 'generating'}
+              disabled={!description.trim() || isGenerating}
               className="w-full mt-2 flex items-center justify-center gap-1.5 px-3 py-2 text-sm bg-[var(--accent)] text-white rounded hover:opacity-90 transition disabled:opacity-40"
             >
               <Sparkles size={14} />
@@ -554,7 +616,39 @@ export default function Home() {
               <div className="h-full relative flex">
                 {/* 流程图主区域 */}
                 <div className={`h-full transition-all duration-300 ${showJsonPanel ? 'flex-1 min-w-0' : 'w-full'}`}>
-                  {flowChart ? (
+                  {/* 生成中：显示流式日志；否则显示流程图或空状态 */}
+                  {isGenerating ? (
+                    <div className="h-full flex flex-col p-4 gap-3">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        {isGenerating && (
+                          <span className="inline-block w-2.5 h-2.5 rounded-full bg-[var(--accent)] animate-pulse" />
+                        )}
+                        <span className="text-[var(--fg)]">
+                          {status === 'generating' ? '正在生成工作流...' : status === 'generating-code' ? '正在生成代码...' : '生成完成'}
+                        </span>
+                      </div>
+                      <div
+                        ref={streamLogRef}
+                        className="flex-1 overflow-auto rounded border border-[var(--border)] bg-[#0d1117] p-3 font-mono text-xs leading-relaxed"
+                      >
+                        {streamLog.map((entry, i) => (
+                          <div key={i} className={
+                            entry.type === 'progress'
+                              ? 'text-blue-400 mb-1'
+                              : entry.type === 'error'
+                              ? 'text-red-400 mb-1'
+                              : 'text-green-300 whitespace-pre-wrap'
+                          }>
+                            {entry.type === 'progress' && <span className="text-gray-500 mr-1">›</span>}
+                            {entry.text}
+                            {entry.type === 'token' && i === streamLog.length - 1 && isGenerating && (
+                              <span className="animate-pulse text-white">▋</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : flowChart ? (
                     <FlowChartView flowChart={flowChart} onNodeClick={handleNodeClick} />
                   ) : (
                     <div className="h-full flex items-center justify-center text-[var(--muted)]">
@@ -563,7 +657,7 @@ export default function Home() {
                   )}
 
                   {/* 右上角 JSON 展开按钮 */}
-                  {workflowDef && !showJsonPanel && (
+                  {workflowDef && !showJsonPanel && !isGenerating && flowChart && (
                     <button
                       onClick={() => setShowJsonPanel(true)}
                       className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border border-[var(--border)] rounded-lg shadow-sm hover:shadow-md hover:border-[var(--accent)] transition"
