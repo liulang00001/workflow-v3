@@ -1,0 +1,15 @@
+{
+  "llm-0": {
+    "apiKey": "c55e565b-b701-4dcb-a6c1-19fc2e4d48a4",
+    "apiBase": "https://ark.cn-beijing.volces.com/api/v3",
+    "model": "doubao-seed-2-0-code-preview-260215"
+  },
+  "llm": {
+    "apiKey": "24d51d16-430d-49ee-9714-e19715af46f1",
+    "apiBase": "https://ark.cn-beijing.volces.com/api/v3",
+    "model2": "doubao-seed-2-0-lite-260215",
+    "model1": "doubao-seed-2-0-code-preview-260215",
+    "model": "doubao-seed-2-0-pro-260215"
+  }
+}
+
