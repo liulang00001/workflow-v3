@@ -1,10 +1,12 @@
 /**
  * API: 自然语言 → JSON 工作流定义（SSE 流式响应）
+ * 使用 OpenAI SDK 访问大模型
  */
 import { getConfig } from '@/lib/config';
 import { NextRequest } from 'next/server';
 import { SYSTEM_PROMPT } from '@/lib/prompts';
 import { extractJSON } from '@/lib/extract-json';
+import OpenAI from 'openai';
 
 function sseChunk(data: object): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`);
@@ -27,66 +29,38 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const client = new OpenAI({
+    baseURL: apiBase,
+    apiKey,
+  });
+
   const stream = new ReadableStream({
     async start(controller) {
       try {
         controller.enqueue(sseChunk({ type: 'progress', message: '正在连接 LLM...' }));
 
         const t0 = Date.now();
-        const llmResponse = await fetch(`${apiBase}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: userPrompt },
-            ],
-            temperature: 0.3,
-            max_tokens: 8192,
-            stream: true,
-          }),
+        const completion = await client.responses.create({
+          model,
+          instructions: SYSTEM_PROMPT,
+          input: [
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.3,
+          max_output_tokens: 8192,
+          stream: true,
         });
-
-        if (!llmResponse.ok) {
-          const errText = await llmResponse.text();
-          controller.enqueue(sseChunk({ type: 'error', error: `LLM 调用失败: ${llmResponse.status} ${errText.substring(0, 200)}` }));
-          controller.close();
-          return;
-        }
 
         controller.enqueue(sseChunk({ type: 'progress', message: 'LLM 开始输出...' }));
 
-        const reader = llmResponse.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
         let fullContent = '';
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) continue;
-            const raw = trimmed.slice(5).trim();
-            if (raw === '[DONE]') continue;
-            try {
-              const parsed = JSON.parse(raw);
-              const delta = parsed.choices?.[0]?.delta?.content ?? '';
-              if (delta) {
-                fullContent += delta;
-                controller.enqueue(sseChunk({ type: 'token', content: delta }));
-              }
-            } catch {
-              // 忽略无法解析的 chunk
+        for await (const event of completion) {
+          if (event.type === 'response.output_text.delta') {
+            const delta = event.delta ?? '';
+            if (delta) {
+              fullContent += delta;
+              controller.enqueue(sseChunk({ type: 'token', content: delta }));
             }
           }
         }
