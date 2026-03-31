@@ -1,0 +1,382 @@
+{
+  "name": "aeb-v0",
+  "description": "",
+  "signalsDef": "\n信号名 信号描述 发送ECU 枚举值及含义\nAEBSysSts AEB触发状态 IPD 0：0x0=AEBSysSts_0_Off;1：0x1=AEBSysSts_1_Standby;（AEB待命）2：0x2=AEBSysSts_2_Disable;（ AEB不可用）3：0x3=AEBSysSts_3_Override;4：0x4=AEBSysSts_4_Active; （AEB激活）\nBrkPdlPos 制动踏板位置 深度，百分比\nEPTAccelActuPos 加速踏板位置 深度，百分比\nVSELongtAcc 车辆实际纵向加速度m/s^2\nVehSpdAvg 实际车速 km/h\nStrgWhlAng 方向盘⻆度 度，左正右负\nStrgWhlAngGrd 方向盘⻆速度度/秒，左正右负",
+  "analyzeSteps": "2.通过DDC数据查看AEBSysSts的值，若为1，转步骤3，若为2或0，转人工分析;\n3.通过DDC数据查看AEB触发情况，可通过DDC秒级或毫秒级数据验证，AEBSysSts=4为触发。\n    若触发且避撞，则正常安抚;\n    若触发且未避撞，则转人工分析;\n    若未触发跳转到步骤4；\n4.查看DDC秒级或毫秒级数据：\n    加速踏板位置EPTAccelActuPos大于85\n    转向盘角速度StrgWhlAngGrd的绝对值大于200\n    转向盘角度StrgWhlAng的绝对值大于90（行人/两轮车除外）\n    若满足三项中的任意一项，则是人工对车辆的操作抑制了AEB触发，可参考相关话术安抚客户；\n        若三项均不满足，确认事故发生的场景，查看自车车速VehSpdAvg的值是否在一定度范围内\n            对纵向前车，VehSpdAvg的值大于20且小于90\n            对VRU，VehSpdAvg的值大于8且小于90\n            对横穿车辆，VehSpdAvg的值大于8且小于65\n            若满足相应场景的车速要求，则转人工分析。\n            若不满足相应场景的自车车速要求\n                对纵向前车 VehSpdAvg的值小于20或大于90\n                对VRU,VehSpdAvg的值小于8或大于90\n                对横穿车辆 VehSpdAvg的值小于8或大于65\n            则输出参照用户手册告知用户车速不在触发范围；",
+  "workflowDef": {
+    "name": "AEB客户咨询场景分析工作流",
+    "description": "根据AEB系统状态、触发情况、驾驶员操作信号及车速，判断AEB未触发原因并输出对应处理方案",
+    "steps": [
+      {
+        "id": "step_1",
+        "module": "scanAll",
+        "label": "逐行扫描AEB系统状态",
+        "description": "遍历所有行数据，根据AEB系统状态走不同分析分支",
+        "children": [
+          {
+            "id": "step_1_1",
+            "module": "switchValue",
+            "label": "AEB系统状态分支判断",
+            "params": {
+              "signal": "AEBSysSts"
+            },
+            "branches": {
+              "0": [
+                {
+                  "id": "step_1_1_branch0_1",
+                  "module": "output",
+                  "label": "AEB关闭转人工",
+                  "params": {
+                    "finding": {
+                      "type": "info",
+                      "message": "AEB系统处于关闭状态，转人工分析"
+                    }
+                  }
+                }
+              ],
+              "1": [
+                {
+                  "id": "step_1_1_branch1_1",
+                  "module": "detectTransition",
+                  "label": "检测AEB是否触发",
+                  "description": "从当前行开始检测AEBSysSts是否从1跳变到4（激活）",
+                  "params": {
+                    "signal": "AEBSysSts",
+                    "from": 1,
+                    "to": 4,
+                    "multiple": false,
+                    "startIndex": "idx"
+                  },
+                  "branches": {
+                    "true": [
+                      {
+                        "id": "step_1_1_branch1_1_true_1",
+                        "module": "checkTimeRange",
+                        "label": "判断是否成功避撞",
+                        "description": "检测AEB触发后10秒内车辆是否成功制动停车",
+                        "params": {
+                          "refIndex": "idx",
+                          "offsetBefore": 0,
+                          "offsetAfter": 10,
+                          "mode": "ever",
+                          "checkCondition": {
+                            "type": "checkMultiValues",
+                            "logic": "and",
+                            "conditions": [
+                              {
+                                "signal": "VSELongtAcc",
+                                "operator": "<=",
+                                "value": -3
+                              },
+                              {
+                                "signal": "VehSpdAvg",
+                                "operator": "<=",
+                                "value": 0
+                              }
+                            ]
+                          }
+                        },
+                        "branches": {
+                          "true": [
+                            {
+                              "id": "step_1_1_branch1_1_true_1_t",
+                              "module": "output",
+                              "label": "避撞成功安抚客户",
+                              "params": {
+                                "finding": {
+                                  "type": "success",
+                                  "message": "AEB已触发且成功避撞，按话术正常安抚客户"
+                                }
+                              }
+                            }
+                          ],
+                          "false": [
+                            {
+                              "id": "step_1_1_branch1_1_true_1_f",
+                              "module": "output",
+                              "label": "未避撞转人工",
+                              "params": {
+                                "finding": {
+                                  "type": "warning",
+                                  "message": "AEB已触发但未成功避撞，转人工分析"
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ],
+                    "false": [
+                      {
+                        "id": "step_1_1_branch1_1_false_1",
+                        "module": "checkMultiValues",
+                        "label": "检查是否人工操作抑制AEB",
+                        "params": {
+                          "logic": "or",
+                          "conditions": [
+                            {
+                              "signal": "EPTAccelActuPos",
+                              "operator": ">",
+                              "value": 85
+                            },
+                            {
+                              "signal": "StrgWhlAngGrd",
+                              "operator": ">",
+                              "value": 200,
+                              "transform": "abs"
+                            },
+                            {
+                              "type": "checkMultiValues",
+                              "logic": "and",
+                              "conditions": [
+                                {
+                                  "signal": "AccidentScene",
+                                  "operator": "!=",
+                                  "value": "VRU"
+                                },
+                                {
+                                  "signal": "StrgWhlAng",
+                                  "operator": ">",
+                                  "value": 90,
+                                  "transform": "abs"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        "branches": {
+                          "true": [
+                            {
+                              "id": "step_1_1_branch1_1_false_1_t",
+                              "module": "output",
+                              "label": "人工操作抑制安抚客户",
+                              "params": {
+                                "finding": {
+                                  "type": "success",
+                                  "message": "检测到驾驶员主动操作（踩加速踏板/大幅打方向）抑制了AEB触发，按话术安抚客户"
+                                }
+                              }
+                            }
+                          ],
+                          "false": [
+                            {
+                              "id": "step_1_1_branch1_1_false_1_f_1",
+                              "module": "checkValue",
+                              "label": "判断是否为纵向前车场景",
+                              "params": {
+                                "signal": "AccidentScene",
+                                "operator": "==",
+                                "value": "纵向前车"
+                              },
+                              "branches": {
+                                "true": [
+                                  {
+                                    "id": "step_1_1_branch1_1_false_1_f_1_t",
+                                    "module": "checkMultiValues",
+                                    "label": "检查纵向前车场景车速范围",
+                                    "params": {
+                                      "logic": "and",
+                                      "conditions": [
+                                        {
+                                          "signal": "VehSpdAvg",
+                                          "operator": ">",
+                                          "value": 20
+                                        },
+                                        {
+                                          "signal": "VehSpdAvg",
+                                          "operator": "<",
+                                          "value": 90
+                                        }
+                                      ]
+                                    },
+                                    "branches": {
+                                      "true": [
+                                        {
+                                          "id": "step_1_1_branch1_1_false_1_f_1_t_t",
+                                          "module": "output",
+                                          "label": "车速符合要求转人工",
+                                          "params": {
+                                            "finding": {
+                                              "type": "warning",
+                                              "message": "纵向前车场景下车速符合AEB触发范围，未触发原因未知，转人工分析"
+                                            }
+                                          }
+                                        }
+                                      ],
+                                      "false": [
+                                        {
+                                          "id": "step_1_1_branch1_1_false_1_f_1_t_f",
+                                          "module": "output",
+                                          "label": "车速不在触发范围",
+                                          "params": {
+                                            "finding": {
+                                              "type": "info",
+                                              "message": "纵向前车场景下车速不在20-90km/h触发范围内，参照用户手册告知客户"
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                ],
+                                "false": [
+                                  {
+                                    "id": "step_1_1_branch1_1_false_1_f_2",
+                                    "module": "checkValue",
+                                    "label": "判断是否为VRU场景",
+                                    "params": {
+                                      "signal": "AccidentScene",
+                                      "operator": "==",
+                                      "value": "VRU"
+                                    },
+                                    "branches": {
+                                      "true": [
+                                        {
+                                          "id": "step_1_1_branch1_1_false_1_f_2_t",
+                                          "module": "checkMultiValues",
+                                          "label": "检查VRU场景车速范围",
+                                          "params": {
+                                            "logic": "and",
+                                            "conditions": [
+                                              {
+                                                "signal": "VehSpdAvg",
+                                                "operator": ">",
+                                                "value": 8
+                                              },
+                                              {
+                                                "signal": "VehSpdAvg",
+                                                "operator": "<",
+                                                "value": 90
+                                              }
+                                            ]
+                                          },
+                                          "branches": {
+                                            "true": [
+                                              {
+                                                "id": "step_1_1_branch1_1_false_1_f_2_t_t",
+                                                "module": "output",
+                                                "label": "车速符合要求转人工",
+                                                "params": {
+                                                  "finding": {
+                                                    "type": "warning",
+                                                    "message": "VRU场景下车速符合AEB触发范围，未触发原因未知，转人工分析"
+                                                  }
+                                                }
+                                              }
+                                            ],
+                                            "false": [
+                                              {
+                                                "id": "step_1_1_branch1_1_false_1_f_2_t_f",
+                                                "module": "output",
+                                                "label": "车速不在触发范围",
+                                                "params": {
+                                                  "finding": {
+                                                    "type": "info",
+                                                    "message": "VRU场景下车速不在8-90km/h触发范围内，参照用户手册告知客户"
+                                                  }
+                                                }
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      ],
+                                      "false": [
+                                        {
+                                          "id": "step_1_1_branch1_1_false_1_f_3",
+                                          "module": "checkValue",
+                                          "label": "判断是否为横穿车辆场景",
+                                          "params": {
+                                            "signal": "AccidentScene",
+                                            "operator": "==",
+                                            "value": "横穿车辆"
+                                          },
+                                          "branches": {
+                                            "true": [
+                                              {
+                                                "id": "step_1_1_branch1_1_false_1_f_3_t",
+                                                "module": "checkMultiValues",
+                                                "label": "检查横穿车辆场景车速范围",
+                                                "params": {
+                                                  "logic": "and",
+                                                  "conditions": [
+                                                    {
+                                                      "signal": "VehSpdAvg",
+                                                      "operator": ">",
+                                                      "value": 8
+                                                    },
+                                                    {
+                                                      "signal": "VehSpdAvg",
+                                                      "operator": "<",
+                                                      "value": 65
+                                                    }
+                                                  ]
+                                                },
+                                                "branches": {
+                                                  "true": [
+                                                    {
+                                                      "id": "step_1_1_branch1_1_false_1_f_3_t_t",
+                                                      "module": "output",
+                                                      "label": "车速符合要求转人工",
+                                                      "params": {
+                                                        "finding": {
+                                                          "type": "warning",
+                                                          "message": "横穿车辆场景下车速符合AEB触发范围，未触发原因未知，转人工分析"
+                                                        }
+                                                      }
+                                                    }
+                                                  ],
+                                                  "false": [
+                                                    {
+                                                      "id": "step_1_1_branch1_1_false_1_f_3_t_f",
+                                                      "module": "output",
+                                                      "label": "车速不在触发范围",
+                                                      "params": {
+                                                        "finding": {
+                                                          "type": "info",
+                                                          "message": "横穿车辆场景下车速不在8-65km/h触发范围内，参照用户手册告知客户"
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              }
+                                            ],
+                                            "false": []
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ],
+              "2": [
+                {
+                  "id": "step_1_1_branch2_1",
+                  "module": "output",
+                  "label": "AEB不可用转人工",
+                  "params": {
+                    "finding": {
+                      "type": "info",
+                      "message": "AEB系统处于不可用状态，转人工分析"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "variables": []
+  },
+  "code": "function analyze(data: SignalRow[]): AnalysisResult {\n  const findings: Finding[] = [];\n  let row: any = data[0];\n  let idx: number = 0;\n\n  // 逐行扫描AEB系统状态\n  scanAll(data, (row, i, allData) => {\n    // AEB系统状态分支判断\n    switchValue(row, \"AEBSysSts\", [\n      { values: [0], label: \"0\", handler: () => {\n        // AEB关闭转人工\n        findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"AEB系统处于关闭状态，转人工分析\" });\n        console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"AEB系统处于关闭状态，转人工分析\" });\n      }},\n      { values: [1], label: \"1\", handler: () => {\n        // 检测AEB是否触发\n        const step_1_1_branch1_1 = detectTransition(data, \"AEBSysSts\", 1, 4, false, idx);\n        console.log(`检测AEB是否触发: 检测到 ${step_1_1_branch1_1.length} 个事件`);\n        if (step_1_1_branch1_1.length > 0) {\n          idx = step_1_1_branch1_1[0]; row = data[idx];\n          // 判断是否成功避撞\n          if (checkTimeRange(data, idx, 0, 10, \"ever\", (r) => checkMultiValues(r, [{\"signal\":\"VSELongtAcc\",\"operator\":\"<=\",\"value\":-3},{\"signal\":\"VehSpdAvg\",\"operator\":\"<=\",\"value\":0}], \"and\"))) {\n            // 避撞成功安抚客户\n            findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"success\", message: \"AEB已触发且成功避撞，按话术正常安抚客户\" });\n            console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"success\", message: \"AEB已触发且成功避撞，按话术正常安抚客户\" });\n          } else {\n            // 未避撞转人工\n            findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"AEB已触发但未成功避撞，转人工分析\" });\n            console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"AEB已触发但未成功避撞，转人工分析\" });\n          }\n        } else {\n          // 检查是否人工操作抑制AEB\n          if (checkMultiValues(row, [{\"signal\":\"EPTAccelActuPos\",\"operator\":\">\",\"value\":85},{\"signal\":\"StrgWhlAngGrd\",\"operator\":\">\",\"value\":200,\"transform\":\"abs\"},{\"type\":\"checkMultiValues\",\"logic\":\"and\",\"conditions\":[{\"signal\":\"AccidentScene\",\"operator\":\"!=\",\"value\":\"VRU\"},{\"signal\":\"StrgWhlAng\",\"operator\":\">\",\"value\":90,\"transform\":\"abs\"}]}], \"or\")) {\n            // 人工操作抑制安抚客户\n            findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"success\", message: \"检测到驾驶员主动操作（踩加速踏板/大幅打方向）抑制了AEB触发，按话术安抚客户\" });\n            console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"success\", message: \"检测到驾驶员主动操作（踩加速踏板/大幅打方向）抑制了AEB触发，按话术安抚客户\" });\n          } else {\n            // 判断是否为纵向前车场景\n            if (checkValue(row, \"AccidentScene\", \"==\", \"纵向前车\")) {\n              // 检查纵向前车场景车速范围\n              if (checkMultiValues(row, [{\"signal\":\"VehSpdAvg\",\"operator\":\">\",\"value\":20},{\"signal\":\"VehSpdAvg\",\"operator\":\"<\",\"value\":90}], \"and\")) {\n                // 车速符合要求转人工\n                findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"纵向前车场景下车速符合AEB触发范围，未触发原因未知，转人工分析\" });\n                console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"纵向前车场景下车速符合AEB触发范围，未触发原因未知，转人工分析\" });\n              } else {\n                // 车速不在触发范围\n                findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"纵向前车场景下车速不在20-90km/h触发范围内，参照用户手册告知客户\" });\n                console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"纵向前车场景下车速不在20-90km/h触发范围内，参照用户手册告知客户\" });\n              }\n            } else {\n              // 判断是否为VRU场景\n              if (checkValue(row, \"AccidentScene\", \"==\", \"VRU\")) {\n                // 检查VRU场景车速范围\n                if (checkMultiValues(row, [{\"signal\":\"VehSpdAvg\",\"operator\":\">\",\"value\":8},{\"signal\":\"VehSpdAvg\",\"operator\":\"<\",\"value\":90}], \"and\")) {\n                  // 车速符合要求转人工\n                  findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"VRU场景下车速符合AEB触发范围，未触发原因未知，转人工分析\" });\n                  console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"VRU场景下车速符合AEB触发范围，未触发原因未知，转人工分析\" });\n                } else {\n                  // 车速不在触发范围\n                  findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"VRU场景下车速不在8-90km/h触发范围内，参照用户手册告知客户\" });\n                  console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"VRU场景下车速不在8-90km/h触发范围内，参照用户手册告知客户\" });\n                }\n              } else {\n                // 判断是否为横穿车辆场景\n                if (checkValue(row, \"AccidentScene\", \"==\", \"横穿车辆\")) {\n                  // 检查横穿车辆场景车速范围\n                  if (checkMultiValues(row, [{\"signal\":\"VehSpdAvg\",\"operator\":\">\",\"value\":8},{\"signal\":\"VehSpdAvg\",\"operator\":\"<\",\"value\":65}], \"and\")) {\n                    // 车速符合要求转人工\n                    findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"横穿车辆场景下车速符合AEB触发范围，未触发原因未知，转人工分析\" });\n                    console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"横穿车辆场景下车速符合AEB触发范围，未触发原因未知，转人工分析\" });\n                  } else {\n                    // 车速不在触发范围\n                    findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"横穿车辆场景下车速不在8-65km/h触发范围内，参照用户手册告知客户\" });\n                    console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"横穿车辆场景下车速不在8-65km/h触发范围内，参照用户手册告知客户\" });\n                  }\n                }\n              }\n            }\n          }\n        }\n      }},\n      { values: [2], label: \"2\", handler: () => {\n        // AEB不可用转人工\n        findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"AEB系统处于不可用状态，转人工分析\" });\n        console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"AEB系统处于不可用状态，转人工分析\" });\n      }}\n    ]);\n  });\n\n  const successCount = findings.filter(f => f.type === 'success').length;\n  const warningCount = findings.filter(f => f.type === 'warning').length;\n  const errorCount = findings.filter(f => f.type === 'error').length;\n  return {\n    findings,\n    summary: `分析完成：${findings.length}个发现（${successCount}成功, ${warningCount}警告, ${errorCount}错误）`\n  };\n}",
+  "savedAt": "2026-03-30T02:17:16.355Z"
+}
