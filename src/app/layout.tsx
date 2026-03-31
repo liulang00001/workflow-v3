@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Workflow Analyzer V2',
-  description: '自然语言 → 代码 → 流程图 → 执行',
+  title: 'RDS SKILL HUB',
+  description: '信号定义 → 逻辑校验 → 工作流 → 代码 → 执行',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

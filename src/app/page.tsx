@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { FlowChart, DataTable, ExecutionResult } from '@/lib/types';
 import { WorkflowDefinition } from '@/lib/workflow-schema';
 import { workflowToFlowChart } from '@/lib/json-to-flow';
 import ResultPanel from '@/components/ResultPanel';
+import LineNumberedTextarea from '@/components/LineNumberedTextarea';
 import DataPreviewPanel, { formatHeader } from '@/components/DataPreviewPanel';
 import { FileUp, Play, Sparkles, Code2, GitBranch, Terminal, Save, Trash2, Table2, Braces, Check, X, ClipboardList, ShieldCheck, AlertTriangle, CheckCircle2, Info, XCircle, BookMarked, ChevronDown } from 'lucide-react';
 
@@ -24,6 +25,7 @@ interface SkillData {
   analyzeSteps: string;
   workflowDef: any;
   code: string;
+  validationResult?: ValidationResult | null;
   savedAt: string;
 }
 
@@ -35,9 +37,9 @@ const MonacoEditor = dynamic(() => import('@monaco-editor/react').then(m => m.de
 type Tab = 'logic' | 'flow' | 'data' | 'result' | 'code';
 
 interface ValidationResult {
-  signalCheck: { passed: boolean; issues: Array<{ signal: string; message: string; suggestion?: string }> };
-  logicCheck: { passed: boolean; issues: Array<{ step: string; type: string; message: string }> };
-  adaptabilityCheck: { passed: boolean; issues: Array<{ step: string; type: string; message: string; suggestion?: string }> };
+  signalCheck: { passed: boolean; issues: Array<{ signal: string; line?: number; message: string; suggestion?: string }> };
+  logicCheck: { passed: boolean; issues: Array<{ step: string; line?: number; type: string; message: string }> };
+  adaptabilityCheck: { passed: boolean; issues: Array<{ step: string; line?: number; type: string; message: string; suggestion?: string }> };
   summary: string;
   optimizedSteps?: string;
 }
@@ -76,6 +78,77 @@ export default function Home() {
   const [analyzeSteps, setAnalyzeSteps] = useState('');
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
+
+  // === 实时信号引用检查（不走大模型） ===
+  // 1) 从信号清单解析出已定义的信号名集合
+  const definedSignalNames = useMemo<Set<string>>(() => {
+    const set = new Set<string>();
+    if (!signalsDef.trim()) return set;
+    for (const line of signalsDef.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const name = trimmed.split(/\s+/)[0];
+      if (name) set.add(name);
+    }
+    return set;
+  }, [signalsDef]);
+
+  // 2) 实时扫描分析步骤中引用的信号，检查是否在信号清单中
+  const realtimeSignalIssues = useMemo<Array<{ line: number; signal: string }>>(() => {
+    if (definedSignalNames.size === 0 || !analyzeSteps.trim()) return [];
+    const issues: Array<{ line: number; signal: string }> = [];
+    const seen = new Set<string>(); // 避免同一信号重复报告
+
+    // 收集所有已定义信号名，用于构建正则：精确匹配这些信号名的变体 or 类似模式
+    // 策略：找所有看起来像信号名的词（大驼峰/含数字的标识符，至少3字符）
+    // 然后检查它是否在已定义集合中
+    const signalPattern = /\b([A-Z][a-zA-Z0-9]{2,})\b/g;
+
+    const lines = analyzeSteps.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let match;
+      signalPattern.lastIndex = 0;
+      while ((match = signalPattern.exec(line)) !== null) {
+        const word = match[1];
+        // 跳过常见的非信号关键词
+        if (/^(AND|OR|NOT|TRUE|FALSE|NULL|NaN|Infinity)$/i.test(word)) continue;
+        // 只对看起来确实像信号名的词报告（至少有一个小写字母+一个大写字母 or 含数字）
+        const looksLikeSignal = (/[a-z]/.test(word) && /[A-Z]/.test(word)) || /\d/.test(word);
+        if (!looksLikeSignal) continue;
+        // 如果在已定义信号集合中，跳过
+        if (definedSignalNames.has(word)) continue;
+        // 新发现的未定义信号
+        const key = `${i + 1}:${word}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          issues.push({ line: i + 1, signal: word });
+        }
+      }
+    }
+    return issues;
+  }, [analyzeSteps, definedSignalNames]);
+
+  // 实时信号错误：行号 → 该行需要标红的信号名列表
+  const highlightWords = useMemo<Map<number, string[]>>(() => {
+    const map = new Map<number, string[]>();
+    for (const issue of realtimeSignalIssues) {
+      const existing = map.get(issue.line) || [];
+      existing.push(issue.signal);
+      map.set(issue.line, existing);
+    }
+    return map;
+  }, [realtimeSignalIssues]);
+
+  // LLM 逻辑校验结果的整行错误行号
+  const errorLines = useMemo<Set<number>>(() => {
+    const set = new Set<number>();
+    if (!validationResult) return set;
+    for (const issue of validationResult.logicCheck.issues) {
+      if (issue.line) set.add(issue.line);
+    }
+    return set;
+  }, [validationResult]);
 
   // === 生成进度流 ===
   const [streamLog, setStreamLog] = useState<Array<{ type: 'progress' | 'token' | 'error'; text: string }>>([]);
@@ -167,6 +240,7 @@ export default function Home() {
           analyzeSteps,
           workflowDef,
           code,
+          validationResult,
         }),
       });
       const json = await res.json();
@@ -182,7 +256,7 @@ export default function Home() {
     } catch (e) {
       setError(String(e));
     }
-  }, [skillSaveName, skillSaveDesc, signalsDef, analyzeSteps, workflowDef, code, loadSkillList]);
+  }, [skillSaveName, skillSaveDesc, signalsDef, analyzeSteps, workflowDef, code, validationResult, loadSkillList]);
 
   // === Skill 加载 ===
   const handleLoadSkill = useCallback(async (name: string) => {
@@ -203,6 +277,7 @@ export default function Home() {
         }
         setCode(skill.code || '');
         if (skill.code) setShowCodeTab(true);
+        setValidationResult(skill.validationResult || null);
         setActiveSkillName(name);
         setShowSkillList(false);
         setResult(null);
@@ -553,7 +628,7 @@ export default function Home() {
     <div className="h-screen flex flex-col">
       {/* 顶部栏 */}
       <header className="border-b border-[var(--border)] px-4 py-2 flex items-center gap-4 shrink-0">
-        <h1 className="font-bold text-lg">Workflow Analyzer V3</h1>
+        <h1 className="font-bold text-lg">RDS SKILL HUB</h1>
         <span className="text-xs text-[var(--muted)]">信号定义 → 逻辑校验 → 工作流 → 代码 → 执行</span>
 
         <div className="flex-1" />
@@ -843,13 +918,33 @@ export default function Home() {
                 <div className="flex-1 flex flex-col min-h-0">
                   {/* 上部：分析步骤输入区 */}
                   <div style={{ height: validationResult ? `${topHeight}%` : '100%' }} className="p-4 flex flex-col min-h-0 shrink-0">
-                    <textarea
+                    <LineNumberedTextarea
                       value={analyzeSteps}
-                      onChange={e => setAnalyzeSteps(e.target.value)}
-                      placeholder={"# 分析逻辑格式示例\n\n## 步骤1：识别离车场景\n- 条件：四门一盖(RLDoorOpenSts, RRDoorOpenSts, DrvrDoorOpenSts, FrtPsngDoorOpenSts, LdspcOpenSts)全部等于0\n- 条件：前10秒内无主驾占位从0变为1(排除上车场景)\n- 动作：记录关闭最后一扇门的时间\n- 下一步：步骤2\n\n## 步骤2：检查蓝牙连接状态\n- 条件：DigKey1Loctn或DigKey2Loctn任一不为0\n- 若不满足：输出\"离车时蓝牙钥匙已断联\"\n- 若满足：进入下一步\n- 下一步：步骤3\n\n## 步骤3：8秒条件检测\n- 条件：四门一盖全关闭，主驾无占位(BCMDrvrDetSts=0)，下Ready(EPTRdy=0)\n- 持续时间：连续8秒\n- 若不满足：记录时间和不满足原因\n- 若满足：进入下一步\n- 下一步：步骤4\n\n## 步骤4：落锁条件检查\n- 条件：蓝牙定位在落锁区域(0,1,2)\n- 条件：VehLckngSta=3(执行外锁)\n- 重复检查：最多600秒\n- 输出：落锁结果和原因"}
-                      className="flex-1 w-full p-3 text-sm border border-[var(--border)] rounded resize-none bg-transparent font-mono leading-relaxed"
+                      onChange={setAnalyzeSteps}
+                      placeholder={"# 分析逻辑格式示例\n\n## 步骤1：识别离车场景\n- 条件：四门一盖全部等于0\n- 动作：记录关闭最后一扇门的时间\n- 下一步：步骤2\n\n## 步骤2：检查蓝牙连接状态\n- 条件：DigKey1Loctn或DigKey2Loctn任一不为0\n- 若不满足：输出\"蓝牙钥匙已断联\""}
+                      className="flex-1"
+                      errorLines={errorLines}
+                      highlightWords={highlightWords}
                     />
                     <p className="text-[10px] text-[var(--muted)] mt-2">格式: ## 步骤N: 标题 + 条件/动作列表</p>
+
+                    {/* 实时信号引用检查提示 */}
+                    {realtimeSignalIssues.length > 0 && (
+                      <div className="mt-2 px-2.5 py-1.5 bg-red-50 border border-red-200 rounded text-[11px] text-red-700 flex items-start gap-1.5 shrink-0">
+                        <XCircle size={13} className="shrink-0 mt-0.5 text-red-400" />
+                        <div className="flex-1 min-w-0">
+                          <span className="font-medium">未定义的信号引用：</span>
+                          <span className="flex flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
+                            {realtimeSignalIssues.map((issue, i) => (
+                              <span key={i}>
+                                <span className="inline-block px-1 py-0.5 rounded bg-red-100 text-red-600 text-[10px] font-mono mr-0.5">L{issue.line}</span>
+                                <span className="font-mono text-red-600">{issue.signal}</span>
+                              </span>
+                            ))}
+                          </span>
+                        </div>
+                      </div>
+                    )}
 
                     {/* 操作按钮 */}
                     <div className="flex gap-2 mt-3 shrink-0">
@@ -911,6 +1006,7 @@ export default function Home() {
                             <div className="space-y-1 ml-5">
                               {validationResult.signalCheck.issues.map((issue, i) => (
                                 <div key={i} className="text-[11px]">
+                                  {issue.line && <span className="inline-block px-1 py-0.5 mr-1 rounded bg-red-100 text-red-600 text-[10px] font-mono">L{issue.line}</span>}
                                   <span className="text-red-500 font-mono">{issue.signal}</span>
                                   <span className="text-[var(--muted)]"> — {issue.message}</span>
                                   {issue.suggestion && <span className="text-blue-500"> 建议: {issue.suggestion}</span>}
@@ -934,6 +1030,7 @@ export default function Home() {
                             <div className="space-y-1 ml-5">
                               {validationResult.logicCheck.issues.map((issue, i) => (
                                 <div key={i} className="text-[11px]">
+                                  {issue.line && <span className="inline-block px-1 py-0.5 mr-1 rounded bg-amber-100 text-amber-700 text-[10px] font-mono">L{issue.line}</span>}
                                   <span className="font-medium">[{issue.step}]</span>
                                   <span className="text-[var(--muted)]"> {issue.message}</span>
                                 </div>
@@ -956,6 +1053,7 @@ export default function Home() {
                             <div className="space-y-1 ml-5">
                               {validationResult.adaptabilityCheck.issues.map((issue, i) => (
                                 <div key={i} className="text-[11px]">
+                                  {issue.line && <span className="inline-block px-1 py-0.5 mr-1 rounded bg-blue-100 text-blue-700 text-[10px] font-mono">L{issue.line}</span>}
                                   <span className="font-medium">[{issue.step}]</span>
                                   <span className="text-[var(--muted)]"> {issue.message}</span>
                                   {issue.suggestion && <div className="text-blue-500 ml-2">→ {issue.suggestion}</div>}
@@ -979,7 +1077,6 @@ export default function Home() {
                                 onClick={() => {
                                   if (validationResult.optimizedSteps) {
                                     setAnalyzeSteps(validationResult.optimizedSteps);
-                                    setValidationResult(null);
                                   }
                                 }}
                                 className="px-2.5 py-1 text-[11px] bg-purple-100 text-purple-700 rounded hover:bg-purple-200 transition"

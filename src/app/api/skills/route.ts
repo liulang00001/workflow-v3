@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
   try {
     ensureDir();
     const body = await request.json();
-    const { name, signalsDef, analyzeSteps, workflowDef, code, description } = body;
+    const { name, signalsDef, analyzeSteps, workflowDef, code, description, validationResult } = body;
 
     if (!name) {
       return NextResponse.json({ success: false, error: '缺少名称' });
@@ -61,6 +61,7 @@ export async function POST(request: NextRequest) {
       analyzeSteps: analyzeSteps || '',
       workflowDef: workflowDef || null,
       code: code || '',
+      validationResult: validationResult || null,
       savedAt: new Date().toISOString(),
     };
 
