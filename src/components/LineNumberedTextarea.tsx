@@ -1,29 +1,69 @@
 'use client';
 
-import { useRef, useCallback, useEffect, useState } from 'react';
+import React, { useRef, useCallback, useEffect, useState, useMemo } from 'react';
 
 interface LineNumberedTextareaProps {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
-  /** 需要标红高亮的行号集合（1-based） */
+  /** 需要整行标红的行号集合（1-based），用于 LLM 逻辑校验结果 */
   errorLines?: Set<number>;
+  /** 需要标红的具体信号词：行号(1-based) → 信号名数组 */
+  highlightWords?: Map<number, string[]>;
 }
 
 const LINE_HEIGHT = 22;
 const FONT_SIZE = 14;
 const PADDING = 12;
+const FONT_FAMILY = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
 
-export default function LineNumberedTextarea({ value, onChange, placeholder, className, errorLines }: LineNumberedTextareaProps) {
+/** 将一行文本中的指定 words 用红色高亮，其余保持正常颜色 */
+function renderLineWithHighlights(text: string, words: string[]): React.ReactNode[] {
+  if (!words.length || !text) return [text || '\u200b'];
+
+  // 构造正则：匹配所有需要高亮的信号名（精确匹配单词边界）
+  const escaped = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const regex = new RegExp(`(${escaped.join('|')})`, 'g');
+
+  const parts = text.split(regex);
+  const wordSet = new Set(words);
+
+  return parts.map((part, i) => {
+    if (wordSet.has(part)) {
+      return (
+        <span
+          key={i}
+          style={{
+            color: '#dc2626',
+            backgroundColor: 'rgba(254, 202, 202, 0.45)',
+            borderRadius: 2,
+            textDecoration: 'wavy underline #f87171',
+            textUnderlineOffset: 3,
+          }}
+        >
+          {part}
+        </span>
+      );
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
+export default function LineNumberedTextarea({
+  value, onChange, placeholder, className, errorLines, highlightWords,
+}: LineNumberedTextareaProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lineNumbersRef = useRef<HTMLDivElement>(null);
-  const highlightRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const [lineHeights, setLineHeights] = useState<number[]>([]);
 
   const lines = value.split('\n');
+
+  // 是否有任何需要高亮的信号词
+  const hasHighlightWords = highlightWords && highlightWords.size > 0;
 
   // 用 mirror div 测量每一行的实际渲染高度（含软换行）
   const measureLines = useCallback(() => {
@@ -45,7 +85,7 @@ export default function LineNumberedTextarea({ value, onChange, placeholder, cla
       lineDiv.style.wordBreak = 'break-all';
       lineDiv.style.fontSize = `${FONT_SIZE}px`;
       lineDiv.style.lineHeight = `${LINE_HEIGHT}px`;
-      lineDiv.style.fontFamily = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+      lineDiv.style.fontFamily = FONT_FAMILY;
       lineDiv.textContent = line || '\u200b';
       mirror.appendChild(lineDiv);
       heights.push(lineDiv.offsetHeight);
@@ -54,9 +94,7 @@ export default function LineNumberedTextarea({ value, onChange, placeholder, cla
     setLineHeights(heights);
   }, [value]);
 
-  useEffect(() => {
-    measureLines();
-  }, [measureLines]);
+  useEffect(() => { measureLines(); }, [measureLines]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -66,31 +104,36 @@ export default function LineNumberedTextarea({ value, onChange, placeholder, cla
     return () => ro.disconnect();
   }, [measureLines]);
 
-  // 同步滚动：textarea → 行号栏 + 高亮层
+  // 同步滚动：textarea → 行号栏 + 叠加层
   const handleScroll = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
-    if (lineNumbersRef.current) {
-      lineNumbersRef.current.scrollTop = ta.scrollTop;
-    }
-    if (highlightRef.current) {
-      highlightRef.current.scrollTop = ta.scrollTop;
-    }
+    if (lineNumbersRef.current) lineNumbersRef.current.scrollTop = ta.scrollTop;
+    if (overlayRef.current) overlayRef.current.scrollTop = ta.scrollTop;
   }, []);
 
-  // 兜底：原生 scroll 事件监听
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     const sync = () => {
       if (lineNumbersRef.current) lineNumbersRef.current.scrollTop = ta.scrollTop;
-      if (highlightRef.current) highlightRef.current.scrollTop = ta.scrollTop;
+      if (overlayRef.current) overlayRef.current.scrollTop = ta.scrollTop;
     };
     ta.addEventListener('scroll', sync, { passive: true });
     return () => ta.removeEventListener('scroll', sync);
   }, []);
 
   const lineCount = lines.length;
+
+  // 预计算每行是否有错误（整行标红 or 有高亮词）
+  const lineFlags = useMemo(() => {
+    return lines.map((_, i) => {
+      const lineNum = i + 1;
+      const hasLineError = errorLines?.has(lineNum) ?? false;
+      const hasWordError = highlightWords?.has(lineNum) ?? false;
+      return { hasLineError, hasWordError, hasAny: hasLineError || hasWordError };
+    });
+  }, [lines, errorLines, highlightWords]);
 
   return (
     <div
@@ -103,15 +146,9 @@ export default function LineNumberedTextarea({ value, onChange, placeholder, cla
         ref={mirrorRef}
         aria-hidden
         style={{
-          position: 'absolute',
-          top: -9999,
-          left: -9999,
-          visibility: 'hidden',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all',
-          fontSize: `${FONT_SIZE}px`,
-          lineHeight: `${LINE_HEIGHT}px`,
-          fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+          position: 'absolute', top: -9999, left: -9999, visibility: 'hidden',
+          whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+          fontSize: `${FONT_SIZE}px`, lineHeight: `${LINE_HEIGHT}px`, fontFamily: FONT_FAMILY,
         }}
       />
 
@@ -126,7 +163,7 @@ export default function LineNumberedTextarea({ value, onChange, placeholder, cla
       >
         <div style={{ paddingTop: PADDING, paddingRight: 8, paddingLeft: 8 }}>
           {lines.map((_, i) => {
-            const isError = errorLines?.has(i + 1);
+            const { hasAny } = lineFlags[i];
             return (
               <div
                 key={i}
@@ -135,9 +172,9 @@ export default function LineNumberedTextarea({ value, onChange, placeholder, cla
                   height: lineHeights[i] || LINE_HEIGHT,
                   lineHeight: `${LINE_HEIGHT}px`,
                   fontSize: 12,
-                  color: isError ? '#dc2626' : 'var(--muted)',
-                  fontWeight: isError ? 600 : 400,
-                  backgroundColor: isError ? '#fef2f2' : 'transparent',
+                  color: hasAny ? '#dc2626' : 'var(--muted)',
+                  fontWeight: hasAny ? 600 : 400,
+                  backgroundColor: hasAny ? '#fef2f2' : 'transparent',
                 }}
               >
                 <span className="ml-auto">{i + 1}</span>
@@ -148,43 +185,57 @@ export default function LineNumberedTextarea({ value, onChange, placeholder, cla
         </div>
       </div>
 
-      {/* 编辑区容器（高亮层 + textarea 叠加） */}
+      {/* 编辑区容器 */}
       <div className="flex-1 relative min-h-0 min-w-0">
-        {/* 高亮背景层 — 位于 textarea 下方，与 textarea 同步滚动 */}
+        {/* 文本渲染叠加层 — 显示带高亮的文字，和 textarea 完全重叠 */}
         <div
-          ref={highlightRef}
+          ref={overlayRef}
           aria-hidden
           className="absolute inset-0 pointer-events-none"
           style={{
             overflowY: 'hidden',
-            paddingTop: PADDING,
-            paddingLeft: PADDING,
-            paddingRight: PADDING,
+            padding: PADDING,
+            fontSize: FONT_SIZE,
+            lineHeight: `${LINE_HEIGHT}px`,
+            fontFamily: FONT_FAMILY,
+            wordBreak: 'break-all',
+            whiteSpace: 'pre-wrap',
+            // 只有存在高亮词时才显示叠加层文字（textarea 文字会透明）
+            color: hasHighlightWords ? 'var(--fg, #1a1a1a)' : 'transparent',
           }}
         >
-          {lines.map((_, i) => {
-            const isError = errorLines?.has(i + 1);
+          {lines.map((lineText, i) => {
+            const lineNum = i + 1;
+            const { hasLineError, hasWordError } = lineFlags[i];
+            const words = highlightWords?.get(lineNum);
+
+            // 行背景样式（LLM 逻辑校验整行标红）
+            const bgStyle: React.CSSProperties = {
+              minHeight: lineHeights[i] || LINE_HEIGHT,
+              ...(hasLineError ? {
+                backgroundColor: 'rgba(254, 202, 202, 0.35)',
+                borderRadius: 2,
+                marginLeft: -PADDING,
+                marginRight: -PADDING,
+                paddingLeft: PADDING,
+                paddingRight: PADDING,
+                borderLeft: '3px solid #f87171',
+              } : {}),
+            };
+
             return (
-              <div
-                key={i}
-                style={{
-                  height: lineHeights[i] || LINE_HEIGHT,
-                  backgroundColor: isError ? 'rgba(254, 202, 202, 0.35)' : 'transparent',
-                  borderRadius: isError ? 2 : 0,
-                  marginLeft: -PADDING,
-                  marginRight: -PADDING,
-                  paddingLeft: PADDING,
-                  paddingRight: PADDING,
-                  // 给错误行左侧加一条红色竖线标记
-                  borderLeft: isError ? '3px solid #f87171' : '3px solid transparent',
-                }}
-              />
+              <div key={i} style={bgStyle}>
+                {words && words.length > 0
+                  ? renderLineWithHighlights(lineText, words)
+                  : (lineText || '\u200b')
+                }
+              </div>
             );
           })}
           <div style={{ height: PADDING }} />
         </div>
 
-        {/* 实际输入 textarea — 背景透明，叠在高亮层上方 */}
+        {/* textarea — 存在高亮词时文字透明，光标可见 */}
         <textarea
           ref={textareaRef}
           value={value}
@@ -200,6 +251,8 @@ export default function LineNumberedTextarea({ value, onChange, placeholder, cla
             wordBreak: 'break-all',
             background: 'transparent',
             caretColor: '#000',
+            // 有高亮词时文字透明（由叠加层显示），否则正常显示
+            color: hasHighlightWords ? 'transparent' : 'inherit',
           }}
         />
       </div>

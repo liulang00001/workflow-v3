@@ -129,21 +129,26 @@ export default function Home() {
     return issues;
   }, [analyzeSteps, definedSignalNames]);
 
-  // 实时信号错误的行号集合
-  const realtimeSignalErrorLines = useMemo<Set<number>>(() => {
-    return new Set(realtimeSignalIssues.map(i => i.line));
+  // 实时信号错误：行号 → 该行需要标红的信号名列表
+  const highlightWords = useMemo<Map<number, string[]>>(() => {
+    const map = new Map<number, string[]>();
+    for (const issue of realtimeSignalIssues) {
+      const existing = map.get(issue.line) || [];
+      existing.push(issue.signal);
+      map.set(issue.line, existing);
+    }
+    return map;
   }, [realtimeSignalIssues]);
 
-  // 合并所有错误行号：实时信号检查 + LLM逻辑校验结果
+  // LLM 逻辑校验结果的整行错误行号
   const errorLines = useMemo<Set<number>>(() => {
-    const set = new Set<number>(realtimeSignalErrorLines);
+    const set = new Set<number>();
     if (!validationResult) return set;
-    // 逻辑完整性检查的问题行
     for (const issue of validationResult.logicCheck.issues) {
       if (issue.line) set.add(issue.line);
     }
     return set;
-  }, [validationResult, realtimeSignalErrorLines]);
+  }, [validationResult]);
 
   // === 生成进度流 ===
   const [streamLog, setStreamLog] = useState<Array<{ type: 'progress' | 'token' | 'error'; text: string }>>([]);
@@ -919,6 +924,7 @@ export default function Home() {
                       placeholder={"# 分析逻辑格式示例\n\n## 步骤1：识别离车场景\n- 条件：四门一盖全部等于0\n- 动作：记录关闭最后一扇门的时间\n- 下一步：步骤2\n\n## 步骤2：检查蓝牙连接状态\n- 条件：DigKey1Loctn或DigKey2Loctn任一不为0\n- 若不满足：输出\"蓝牙钥匙已断联\""}
                       className="flex-1"
                       errorLines={errorLines}
+                      highlightWords={highlightWords}
                     />
                     <p className="text-[10px] text-[var(--muted)] mt-2">格式: ## 步骤N: 标题 + 条件/动作列表</p>
 
