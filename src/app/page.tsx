@@ -6,6 +6,7 @@ import { FlowChart, DataTable, ExecutionResult } from '@/lib/types';
 import { WorkflowDefinition } from '@/lib/workflow-schema';
 import { workflowToFlowChart } from '@/lib/json-to-flow';
 import ResultPanel from '@/components/ResultPanel';
+import LineNumberedTextarea from '@/components/LineNumberedTextarea';
 import DataPreviewPanel, { formatHeader } from '@/components/DataPreviewPanel';
 import { FileUp, Play, Sparkles, Code2, GitBranch, Terminal, Save, Trash2, Table2, Braces, Check, X, ClipboardList, ShieldCheck, AlertTriangle, CheckCircle2, Info, XCircle, BookMarked, ChevronDown } from 'lucide-react';
 
@@ -24,6 +25,7 @@ interface SkillData {
   analyzeSteps: string;
   workflowDef: any;
   code: string;
+  validationResult?: ValidationResult | null;
   savedAt: string;
 }
 
@@ -35,9 +37,9 @@ const MonacoEditor = dynamic(() => import('@monaco-editor/react').then(m => m.de
 type Tab = 'logic' | 'flow' | 'data' | 'result' | 'code';
 
 interface ValidationResult {
-  signalCheck: { passed: boolean; issues: Array<{ signal: string; message: string; suggestion?: string }> };
-  logicCheck: { passed: boolean; issues: Array<{ step: string; type: string; message: string }> };
-  adaptabilityCheck: { passed: boolean; issues: Array<{ step: string; type: string; message: string; suggestion?: string }> };
+  signalCheck: { passed: boolean; issues: Array<{ signal: string; line?: number; message: string; suggestion?: string }> };
+  logicCheck: { passed: boolean; issues: Array<{ step: string; line?: number; type: string; message: string }> };
+  adaptabilityCheck: { passed: boolean; issues: Array<{ step: string; line?: number; type: string; message: string; suggestion?: string }> };
   summary: string;
   optimizedSteps?: string;
 }
@@ -167,6 +169,7 @@ export default function Home() {
           analyzeSteps,
           workflowDef,
           code,
+          validationResult,
         }),
       });
       const json = await res.json();
@@ -182,7 +185,7 @@ export default function Home() {
     } catch (e) {
       setError(String(e));
     }
-  }, [skillSaveName, skillSaveDesc, signalsDef, analyzeSteps, workflowDef, code, loadSkillList]);
+  }, [skillSaveName, skillSaveDesc, signalsDef, analyzeSteps, workflowDef, code, validationResult, loadSkillList]);
 
   // === Skill 加载 ===
   const handleLoadSkill = useCallback(async (name: string) => {
@@ -203,6 +206,7 @@ export default function Home() {
         }
         setCode(skill.code || '');
         if (skill.code) setShowCodeTab(true);
+        setValidationResult(skill.validationResult || null);
         setActiveSkillName(name);
         setShowSkillList(false);
         setResult(null);
@@ -553,7 +557,7 @@ export default function Home() {
     <div className="h-screen flex flex-col">
       {/* 顶部栏 */}
       <header className="border-b border-[var(--border)] px-4 py-2 flex items-center gap-4 shrink-0">
-        <h1 className="font-bold text-lg">Workflow Analyzer V3</h1>
+        <h1 className="font-bold text-lg">RDS SKILL HUB</h1>
         <span className="text-xs text-[var(--muted)]">信号定义 → 逻辑校验 → 工作流 → 代码 → 执行</span>
 
         <div className="flex-1" />
@@ -843,11 +847,11 @@ export default function Home() {
                 <div className="flex-1 flex flex-col min-h-0">
                   {/* 上部：分析步骤输入区 */}
                   <div style={{ height: validationResult ? `${topHeight}%` : '100%' }} className="p-4 flex flex-col min-h-0 shrink-0">
-                    <textarea
+                    <LineNumberedTextarea
                       value={analyzeSteps}
-                      onChange={e => setAnalyzeSteps(e.target.value)}
-                      placeholder={"# 分析逻辑格式示例\n\n## 步骤1：识别离车场景\n- 条件：四门一盖(RLDoorOpenSts, RRDoorOpenSts, DrvrDoorOpenSts, FrtPsngDoorOpenSts, LdspcOpenSts)全部等于0\n- 条件：前10秒内无主驾占位从0变为1(排除上车场景)\n- 动作：记录关闭最后一扇门的时间\n- 下一步：步骤2\n\n## 步骤2：检查蓝牙连接状态\n- 条件：DigKey1Loctn或DigKey2Loctn任一不为0\n- 若不满足：输出\"离车时蓝牙钥匙已断联\"\n- 若满足：进入下一步\n- 下一步：步骤3\n\n## 步骤3：8秒条件检测\n- 条件：四门一盖全关闭，主驾无占位(BCMDrvrDetSts=0)，下Ready(EPTRdy=0)\n- 持续时间：连续8秒\n- 若不满足：记录时间和不满足原因\n- 若满足：进入下一步\n- 下一步：步骤4\n\n## 步骤4：落锁条件检查\n- 条件：蓝牙定位在落锁区域(0,1,2)\n- 条件：VehLckngSta=3(执行外锁)\n- 重复检查：最多600秒\n- 输出：落锁结果和原因"}
-                      className="flex-1 w-full p-3 text-sm border border-[var(--border)] rounded resize-none bg-transparent font-mono leading-relaxed"
+                      onChange={setAnalyzeSteps}
+                      placeholder={"# 分析逻辑格式示例\n\n## 步骤1：识别离车场景\n- 条件：四门一盖全部等于0\n- 动作：记录关闭最后一扇门的时间\n- 下一步：步骤2\n\n## 步骤2：检查蓝牙连接状态\n- 条件：DigKey1Loctn或DigKey2Loctn任一不为0\n- 若不满足：输出\"蓝牙钥匙已断联\""}
+                      className="flex-1"
                     />
                     <p className="text-[10px] text-[var(--muted)] mt-2">格式: ## 步骤N: 标题 + 条件/动作列表</p>
 
@@ -911,6 +915,7 @@ export default function Home() {
                             <div className="space-y-1 ml-5">
                               {validationResult.signalCheck.issues.map((issue, i) => (
                                 <div key={i} className="text-[11px]">
+                                  {issue.line && <span className="inline-block px-1 py-0.5 mr-1 rounded bg-red-100 text-red-600 text-[10px] font-mono">L{issue.line}</span>}
                                   <span className="text-red-500 font-mono">{issue.signal}</span>
                                   <span className="text-[var(--muted)]"> — {issue.message}</span>
                                   {issue.suggestion && <span className="text-blue-500"> 建议: {issue.suggestion}</span>}
@@ -934,6 +939,7 @@ export default function Home() {
                             <div className="space-y-1 ml-5">
                               {validationResult.logicCheck.issues.map((issue, i) => (
                                 <div key={i} className="text-[11px]">
+                                  {issue.line && <span className="inline-block px-1 py-0.5 mr-1 rounded bg-amber-100 text-amber-700 text-[10px] font-mono">L{issue.line}</span>}
                                   <span className="font-medium">[{issue.step}]</span>
                                   <span className="text-[var(--muted)]"> {issue.message}</span>
                                 </div>
@@ -956,6 +962,7 @@ export default function Home() {
                             <div className="space-y-1 ml-5">
                               {validationResult.adaptabilityCheck.issues.map((issue, i) => (
                                 <div key={i} className="text-[11px]">
+                                  {issue.line && <span className="inline-block px-1 py-0.5 mr-1 rounded bg-blue-100 text-blue-700 text-[10px] font-mono">L{issue.line}</span>}
                                   <span className="font-medium">[{issue.step}]</span>
                                   <span className="text-[var(--muted)]"> {issue.message}</span>
                                   {issue.suggestion && <div className="text-blue-500 ml-2">→ {issue.suggestion}</div>}
@@ -979,7 +986,6 @@ export default function Home() {
                                 onClick={() => {
                                   if (validationResult.optimizedSteps) {
                                     setAnalyzeSteps(validationResult.optimizedSteps);
-                                    setValidationResult(null);
                                   }
                                 }}
                                 className="px-2.5 py-1 text-[11px] bg-purple-100 text-purple-700 rounded hover:bg-purple-200 transition"
