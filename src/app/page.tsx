@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { FlowChart, DataTable, ExecutionResult } from '@/lib/types';
 import { WorkflowDefinition } from '@/lib/workflow-schema';
@@ -78,6 +78,21 @@ export default function Home() {
   const [analyzeSteps, setAnalyzeSteps] = useState('');
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
+
+  // 从校验结果中提取有问题的行号（信号检查 + 逻辑完整性检查）
+  const errorLines = useMemo<Set<number>>(() => {
+    const set = new Set<number>();
+    if (!validationResult) return set;
+    // 信号引用检查的问题行
+    for (const issue of validationResult.signalCheck.issues) {
+      if (issue.line) set.add(issue.line);
+    }
+    // 逻辑完整性检查的问题行
+    for (const issue of validationResult.logicCheck.issues) {
+      if (issue.line) set.add(issue.line);
+    }
+    return set;
+  }, [validationResult]);
 
   // === 生成进度流 ===
   const [streamLog, setStreamLog] = useState<Array<{ type: 'progress' | 'token' | 'error'; text: string }>>([]);
@@ -852,6 +867,7 @@ export default function Home() {
                       onChange={setAnalyzeSteps}
                       placeholder={"# 分析逻辑格式示例\n\n## 步骤1：识别离车场景\n- 条件：四门一盖全部等于0\n- 动作：记录关闭最后一扇门的时间\n- 下一步：步骤2\n\n## 步骤2：检查蓝牙连接状态\n- 条件：DigKey1Loctn或DigKey2Loctn任一不为0\n- 若不满足：输出\"蓝牙钥匙已断联\""}
                       className="flex-1"
+                      errorLines={errorLines}
                     />
                     <p className="text-[10px] text-[var(--muted)] mt-2">格式: ## 步骤N: 标题 + 条件/动作列表</p>
 
