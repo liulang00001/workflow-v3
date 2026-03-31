@@ -1,0 +1,376 @@
+{
+  "name": "蓝牙离车不落锁02",
+  "description": "",
+  "signalsDef": "VehLckngSta ⻋锁信号：0 代表解锁，2代表内锁，3代表外锁\nRLDoorOpenSts 左后⻔开关信号：0 代表关闭，2代表半开，3代表全开。\nRRDoorOpenSts 右后⻔开关信号：0 代表关闭，2代表半开，3代表全开。\nDrvrDoorOpenSts 主驾⻔开关信号：0 代表关闭，2代表半开，3代表全开。\nFrtPsngDoorOpenSts 副驾⻔开关信号：0 代表关闭，2代表半开，3代表全开。\nLdspcOpenSts 后备箱开关信号：0代表关闭，1代表打开。\nBCMDrvrDetSts 主驾占位信号：0代表⽆占位，1代表有占位。\nDigKey1Loctn 主账号蓝⽛钥匙位置：0，1，2 代表落锁区域（同时0代表未连接，1，2代表已连接 但处于落锁区域）；3，4，5，6，7，9，11代表解锁区域。\nDigKey2Loctn 授权账号蓝⽛钥匙位置：0，1，2 代表落锁区域（同时0代表未连接，1，2代表已连接 但处于落锁区域）；3，4，5，6，7，9，11代表解锁区域。\nEPTRdy ⻋辆是否上ready状态：0代表未上ready，1代表已上ready。",
+  "analyzeSteps": "2.1 从上传的数据清单中按照上报时间从前往后查询：\n    a. 识别所有四⻔⼀盖信号（RLDoorOpenSts，RRDoorOpenSts，DrvrDoorOpenSts，FrtPsngDoorOpenSts，LdspcOpenSts）从⾮0跳变到0的时刻，且此时其他所有⻔信号均为0。\n    b. 对于每个候选时刻T：\n        i. 检查T时刻前10秒内是否存在主驾占位从0变为1（BCMDrvrDetSts=1）的情况。\n        ii. 若存在，则判定为上⻋场景，跳过该时刻，继续寻找下⼀个候选时刻。\n        iii. 若不存在，则判定为离⻋场景，记录该时刻为关闭最后⼀扇⻔的时间，进⼊步骤2.2。\n2.2 基于2.1识别到的关闭最后⼀扇⻔的时刻，查询蓝⽛钥匙连接状态。\n    i. 若DigKey1Loctn或DigKey2Loctn 不为0，则关⻔时蓝⽛钥匙是连接状态，触发判断逻辑开始向后计时查询跳转到步骤2.3；\n    ii.若DigKey1Loctn和DigKey2Loctn 都为0，记录时间，输出该时刻离⻋未落锁的原因是离⻋时蓝⽛钥匙断联。\n2.3 向后计时连续查询8秒，每1秒检查四⻔⼀盖都关闭（RLDoorOpenSts，RRDoorOpenSts，DrvrDoorOpenSts，FrtPsngDoorOpenSts，LdspcOpenSts均为0），主驾⽆占位（BCMDrvrDetSts=0），下ready（EPTRdy=0）\n    i.若其中有四⻔⼀盖条件不满⾜（RLDoorOpenSts，RRDoorOpenSts，DrvrDoorOpenSts，FrtPsngDoorOpenSts，LdspcOpenSts有不等于0的情况）或主驾占位或下ready条件不满⾜（BCMDrvrDetSts≠0，EPTRdy≠0）记录时间和不满⾜信息（未落锁原因）。\n    ii.若连续8S以上条件均满⾜，执⾏步骤2.4。\n2.4 从第9S开始，检查四⻔⼀盖都关闭（RLDoorOpenSts，RRDoorOpenSts，DrvrDoorOpenSts，FrtPsngDoorOpenSts，LdspcOpenSts均为0），主驾⽆占位（BCMDrvrDetSts=0），下ready（EPTRdy=0），增加判断蓝⽛定位判断。\n    i.若其中有四⻔⼀盖条件不满⾜（RLDoorOpenSts，RRDoorOpenSts，DrvrDoorOpenSts，FrtPsngDoorOpenSts，LdspcOpenSts有不等于0的情况）或主驾占位或下ready条件不满⾜（BCMDrvrDetSts≠0，EPTRdy≠0）记录时间和不满⾜信息（未落锁原因）。\n    ii.若四⻔⼀盖和主驾⽆占位和下ready条件都满⾜，且蓝⽛定位满⾜在0或1或2区（DigKey1Loctn以及DigKey2Loctn，同时满⾜等于0或1或2），即可以触发落锁（VehLckngSta=3），记录落锁时间；\n    iii.若四⻔⼀盖和主驾⽆占位和下ready条件都满⾜，但蓝⽛定位条件不满⾜，从下⼀秒开始重复执⾏\n2.4步骤重复600s。若重复执⾏600s后还未找到蓝⽛钥匙定位满⾜的情况，重复执⾏动作结束，记录时间，并输出未落锁的原因为蓝⽛钥匙定位不满⾜。\n",
+  "workflowDef": {
+    "name": "离车自动落锁异常检测工作流",
+    "description": "识别离车场景，检测自动落锁逻辑是否正常执行，输出异常原因",
+    "steps": [
+      {
+        "id": "step_1",
+        "module": "detectMultiTransition",
+        "label": "检测最后一扇门关闭时刻",
+        "description": "识别四门一盖任意信号从非0跳变到0，且此时所有门均为关闭的候选时刻",
+        "params": {
+          "transitions": [
+            {
+              "signal": "RLDoorOpenSts",
+              "from": "!0",
+              "to": 0
+            },
+            {
+              "signal": "RRDoorOpenSts",
+              "from": "!0",
+              "to": 0
+            },
+            {
+              "signal": "DrvrDoorOpenSts",
+              "from": "!0",
+              "to": 0
+            },
+            {
+              "signal": "FrtPsngDoorOpenSts",
+              "from": "!0",
+              "to": 0
+            },
+            {
+              "signal": "LdspcOpenSts",
+              "from": "!0",
+              "to": 0
+            }
+          ],
+          "contextConditions": [
+            {
+              "signal": "RLDoorOpenSts",
+              "operator": "==",
+              "value": 0
+            },
+            {
+              "signal": "RRDoorOpenSts",
+              "operator": "==",
+              "value": 0
+            },
+            {
+              "signal": "DrvrDoorOpenSts",
+              "operator": "==",
+              "value": 0
+            },
+            {
+              "signal": "FrtPsngDoorOpenSts",
+              "operator": "==",
+              "value": 0
+            },
+            {
+              "signal": "LdspcOpenSts",
+              "operator": "==",
+              "value": 0
+            }
+          ],
+          "multiple": true
+        },
+        "children": [
+          {
+            "id": "step_1_1",
+            "module": "detectTransition",
+            "label": "检查前10秒是否有主驾上车",
+            "description": "检测候选时刻前10秒内是否存在主驾占位从0变1的跳变",
+            "params": {
+              "signal": "BCMDrvrDetSts",
+              "from": 0,
+              "to": 1,
+              "startIndex": "idx - 10",
+              "endIndex": "idx"
+            },
+            "branches": {
+              "true": [
+                {
+                  "id": "step_1_1_true_1",
+                  "module": "output",
+                  "label": "上车场景跳过",
+                  "params": {
+                    "finding": {
+                      "type": "info",
+                      "message": "当前为上车场景，跳过该时刻"
+                    }
+                  }
+                }
+              ],
+              "false": [
+                {
+                  "id": "step_1_1_false_1",
+                  "module": "checkMultiValues",
+                  "label": "检查关锁时刻蓝牙钥匙连接状态",
+                  "params": {
+                    "conditions": [
+                      {
+                        "signal": "DigKey1Loctn",
+                        "operator": "==",
+                        "value": 0
+                      },
+                      {
+                        "signal": "DigKey2Loctn",
+                        "operator": "==",
+                        "value": 0
+                      }
+                    ],
+                    "logic": "and"
+                  },
+                  "branches": {
+                    "true": [
+                      {
+                        "id": "step_1_1_false_1_true_1",
+                        "module": "output",
+                        "label": "离车时蓝牙断联",
+                        "params": {
+                          "finding": {
+                            "type": "warning",
+                            "message": "离车未落锁，原因：离车时蓝牙钥匙断联"
+                          }
+                        }
+                      }
+                    ],
+                    "false": [
+                      {
+                        "id": "step_1_1_false_1_false_1",
+                        "module": "checkTimeRange",
+                        "label": "检查关锁后8秒内基础条件是否持续满足",
+                        "params": {
+                          "refIndex": "idx",
+                          "offsetBefore": 0,
+                          "offsetAfter": 8,
+                          "mode": "always",
+                          "checkCondition": {
+                            "type": "checkMultiValues",
+                            "conditions": [
+                              {
+                                "signal": "RLDoorOpenSts",
+                                "operator": "==",
+                                "value": 0
+                              },
+                              {
+                                "signal": "RRDoorOpenSts",
+                                "operator": "==",
+                                "value": 0
+                              },
+                              {
+                                "signal": "DrvrDoorOpenSts",
+                                "operator": "==",
+                                "value": 0
+                              },
+                              {
+                                "signal": "FrtPsngDoorOpenSts",
+                                "operator": "==",
+                                "value": 0
+                              },
+                              {
+                                "signal": "LdspcOpenSts",
+                                "operator": "==",
+                                "value": 0
+                              },
+                              {
+                                "signal": "BCMDrvrDetSts",
+                                "operator": "==",
+                                "value": 0
+                              },
+                              {
+                                "signal": "EPTRdy",
+                                "operator": "==",
+                                "value": 0
+                              }
+                            ],
+                            "logic": "and"
+                          }
+                        },
+                        "branches": {
+                          "false": [
+                            {
+                              "id": "step_1_1_false_1_false_1_false_1",
+                              "module": "output",
+                              "label": "8秒内基础条件不满足",
+                              "params": {
+                                "finding": {
+                                  "type": "warning",
+                                  "message": "离车未落锁，原因：关锁后8秒内基础条件不满足"
+                                }
+                              }
+                            }
+                          ],
+                          "true": [
+                            {
+                              "id": "step_1_1_false_1_false_1_true_1",
+                              "module": "loopScan",
+                              "label": "600秒内检测落锁条件",
+                              "params": {
+                                "startIndex": "idx + 9",
+                                "maxRows": 600,
+                                "checks": [
+                                  {
+                                    "name": "基础条件不满足",
+                                    "condition": {
+                                      "type": "checkMultiValues",
+                                      "conditions": [
+                                        {
+                                          "signal": "RLDoorOpenSts",
+                                          "operator": "!=",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "RRDoorOpenSts",
+                                          "operator": "!=",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "DrvrDoorOpenSts",
+                                          "operator": "!=",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "FrtPsngDoorOpenSts",
+                                          "operator": "!=",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "LdspcOpenSts",
+                                          "operator": "!=",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "BCMDrvrDetSts",
+                                          "operator": "!=",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "EPTRdy",
+                                          "operator": "!=",
+                                          "value": 0
+                                        }
+                                      ],
+                                      "logic": "or"
+                                    },
+                                    "exitOnPass": true
+                                  },
+                                  {
+                                    "name": "落锁条件满足",
+                                    "condition": {
+                                      "type": "checkMultiValues",
+                                      "conditions": [
+                                        {
+                                          "signal": "RLDoorOpenSts",
+                                          "operator": "==",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "RRDoorOpenSts",
+                                          "operator": "==",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "DrvrDoorOpenSts",
+                                          "operator": "==",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "FrtPsngDoorOpenSts",
+                                          "operator": "==",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "LdspcOpenSts",
+                                          "operator": "==",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "BCMDrvrDetSts",
+                                          "operator": "==",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "EPTRdy",
+                                          "operator": "==",
+                                          "value": 0
+                                        },
+                                        {
+                                          "signal": "DigKey1Loctn",
+                                          "operator": "in",
+                                          "value": [
+                                            0,
+                                            1,
+                                            2
+                                          ]
+                                        },
+                                        {
+                                          "signal": "DigKey2Loctn",
+                                          "operator": "in",
+                                          "value": [
+                                            0,
+                                            1,
+                                            2
+                                          ]
+                                        }
+                                      ],
+                                      "logic": "and"
+                                    },
+                                    "exitOnPass": true
+                                  }
+                                ]
+                              },
+                              "branches": {
+                                "基础条件不满足": [
+                                  {
+                                    "id": "step_1_1_false_1_false_1_true_1_branch1_1",
+                                    "module": "output",
+                                    "label": "检测过程中基础条件不满足",
+                                    "params": {
+                                      "finding": {
+                                        "type": "warning",
+                                        "message": "离车未落锁，原因：落锁检测过程中基础条件不满足"
+                                      }
+                                    }
+                                  }
+                                ],
+                                "落锁条件满足": [
+                                  {
+                                    "id": "step_1_1_false_1_false_1_true_1_branch2_1",
+                                    "module": "output",
+                                    "label": "落锁成功",
+                                    "params": {
+                                      "finding": {
+                                        "type": "success",
+                                        "message": "离车自动落锁成功"
+                                      }
+                                    }
+                                  }
+                                ],
+                                "timeout": [
+                                  {
+                                    "id": "step_1_1_false_1_false_1_true_1_timeout_1",
+                                    "module": "output",
+                                    "label": "蓝牙定位不满足",
+                                    "params": {
+                                      "finding": {
+                                        "type": "warning",
+                                        "message": "离车未落锁，原因：600秒内蓝牙钥匙定位不满足落锁要求"
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "variables": []
+  },
+  "code": "function analyze(data: SignalRow[]): AnalysisResult {\n  const findings: Finding[] = [];\n  let row: any = data[0];\n  let idx: number = 0;\n\n  // 检测最后一扇门关闭时刻\n  const step_1 = detectMultiTransition(data, [{\"signal\":\"RLDoorOpenSts\",\"from\":\"!0\",\"to\":0},{\"signal\":\"RRDoorOpenSts\",\"from\":\"!0\",\"to\":0},{\"signal\":\"DrvrDoorOpenSts\",\"from\":\"!0\",\"to\":0},{\"signal\":\"FrtPsngDoorOpenSts\",\"from\":\"!0\",\"to\":0},{\"signal\":\"LdspcOpenSts\",\"from\":\"!0\",\"to\":0}], [{\"signal\":\"RLDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"RRDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"DrvrDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"FrtPsngDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"LdspcOpenSts\",\"operator\":\"==\",\"value\":0}], true);\n  console.log(`检测最后一扇门关闭时刻: 检测到 ${step_1.length} 个事件`);\n  forEachEvent(data, step_1, (row, idx, eventNo) => {\n    console.log(`[事件${eventNo}] 时刻: ${row.time}`);\n    // 检查前10秒是否有主驾上车\n    const step_1_1 = detectTransition(data, \"BCMDrvrDetSts\", 0, 1, true, idx - 10, idx);\n    console.log(`检查前10秒是否有主驾上车: 检测到 ${step_1_1.length} 个事件`);\n    if (step_1_1.length > 0) {\n      idx = step_1_1[0]; row = data[idx];\n      // 上车场景跳过\n      findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"当前为上车场景，跳过该时刻\" });\n      console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"info\", message: \"当前为上车场景，跳过该时刻\" });\n    } else {\n      // 检查关锁时刻蓝牙钥匙连接状态\n      if (checkMultiValues(row, [{\"signal\":\"DigKey1Loctn\",\"operator\":\"==\",\"value\":0},{\"signal\":\"DigKey2Loctn\",\"operator\":\"==\",\"value\":0}], \"and\")) {\n        // 离车时蓝牙断联\n        findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"离车未落锁，原因：离车时蓝牙钥匙断联\" });\n        console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"离车未落锁，原因：离车时蓝牙钥匙断联\" });\n      } else {\n        // 检查关锁后8秒内基础条件是否持续满足\n        if (checkTimeRange(data, idx, 0, 8, \"always\", (r) => checkMultiValues(r, [{\"signal\":\"RLDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"RRDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"DrvrDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"FrtPsngDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"LdspcOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"BCMDrvrDetSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"EPTRdy\",\"operator\":\"==\",\"value\":0}], \"and\"))) {\n          // 600秒内检测落锁条件\n          const step_1_1_false_1_false_1_true_1 = loopScan(data, idx + 9, 600, [\n    { name: \"基础条件不满足\", condition: (row) => checkMultiValues(row, [{\"signal\":\"RLDoorOpenSts\",\"operator\":\"!=\",\"value\":0},{\"signal\":\"RRDoorOpenSts\",\"operator\":\"!=\",\"value\":0},{\"signal\":\"DrvrDoorOpenSts\",\"operator\":\"!=\",\"value\":0},{\"signal\":\"FrtPsngDoorOpenSts\",\"operator\":\"!=\",\"value\":0},{\"signal\":\"LdspcOpenSts\",\"operator\":\"!=\",\"value\":0},{\"signal\":\"BCMDrvrDetSts\",\"operator\":\"!=\",\"value\":0},{\"signal\":\"EPTRdy\",\"operator\":\"!=\",\"value\":0}], \"or\"), exitOnPass: true },\n    { name: \"落锁条件满足\", condition: (row) => checkMultiValues(row, [{\"signal\":\"RLDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"RRDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"DrvrDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"FrtPsngDoorOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"LdspcOpenSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"BCMDrvrDetSts\",\"operator\":\"==\",\"value\":0},{\"signal\":\"EPTRdy\",\"operator\":\"==\",\"value\":0},{\"signal\":\"DigKey1Loctn\",\"operator\":\"in\",\"value\":[0,1,2]},{\"signal\":\"DigKey2Loctn\",\"operator\":\"in\",\"value\":[0,1,2]}], \"and\"), exitOnPass: true }\n          ]);\n          console.log(`循环扫描结果: ${step_1_1_false_1_false_1_true_1.exitReason}, 检查项: ${step_1_1_false_1_false_1_true_1.exitCheckName}, 行号: ${step_1_1_false_1_false_1_true_1.exitIndex}`);\n        } else {\n          // 8秒内基础条件不满足\n          findings.push({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"离车未落锁，原因：关锁后8秒内基础条件不满足\" });\n          console.log({ time: (typeof row !== \"undefined\" && row.time) || \"\", type: \"warning\", message: \"离车未落锁，原因：关锁后8秒内基础条件不满足\" });\n        }\n      }\n    }\n  });\n\n  const successCount = findings.filter(f => f.type === 'success').length;\n  const warningCount = findings.filter(f => f.type === 'warning').length;\n  const errorCount = findings.filter(f => f.type === 'error').length;\n  return {\n    findings,\n    summary: `分析完成：${findings.length}个发现（${successCount}成功, ${warningCount}警告, ${errorCount}错误）`\n  };\n}",
+  "savedAt": "2026-03-30T01:54:47.378Z"
+}

@@ -2,8 +2,21 @@
  * 从 LLM 返回的文本中提取 JSON 对象
  * 支持多种格式：```json 包裹、```包裹、裸 JSON、带前后文字的 JSON、截断的 JSON
  */
-export function extractJSON(text: string): any | null {
-  if (!text?.trim()) return null;
+
+export interface ExtractLogger {
+  log(level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG', message: string): void;
+}
+
+const noop: ExtractLogger = { log() {} };
+
+export function extractJSON(text: string, logger: ExtractLogger = noop): any | null {
+  if (!text?.trim()) {
+    logger.log('WARN', 'extractJSON: input is empty or whitespace-only');
+    return null;
+  }
+
+  logger.log('INFO', `extractJSON: input length=${text.length}, first 200 chars: ${text.substring(0, 200).replace(/\n/g, '\\n')}`);
+  logger.log('INFO', `extractJSON: last 200 chars: ${text.substring(Math.max(0, text.length - 200)).replace(/\n/g, '\\n')}`);
 
   // 1. 标准 ```json ... ``` 格式（各种变体）
   const fencedPatterns = [
@@ -13,35 +26,56 @@ export function extractJSON(text: string): any | null {
   for (const pattern of fencedPatterns) {
     const match = text.match(pattern);
     if (match) {
+      logger.log('DEBUG', `Strategy 1 (fenced): matched pattern, content length=${match[1].trim().length}`);
       const result = tryParse(match[1].trim());
-      if (result !== null) return result;
+      if (result !== null) {
+        logger.log('INFO', `Strategy 1 (fenced): SUCCESS — parsed ${result.steps?.length ?? '?'} steps`);
+        return result;
+      }
+      logger.log('WARN', `Strategy 1 (fenced): matched fence but JSON.parse failed`);
     }
   }
 
   // 2. 没有结尾 ``` 的情况（LLM 输出被截断）
-  //    匹配 ```json 开头，取后面所有内容
   const openFenceMatch = text.match(/```json\s*\n([\s\S]+)/i);
   if (openFenceMatch) {
     let content = openFenceMatch[1];
-    // 去掉可能存在的结尾 ```
     content = content.replace(/```\s*$/, '');
+    logger.log('DEBUG', `Strategy 2 (open fence): content length=${content.trim().length}`);
     const result = tryParse(content.trim());
-    if (result !== null) return result;
-    // 尝试修复截断
-    const fixed = tryFixTruncatedJSON(content.trim());
-    if (fixed !== null) return fixed;
+    if (result !== null) {
+      logger.log('INFO', `Strategy 2 (open fence): SUCCESS`);
+      return result;
+    }
+    logger.log('DEBUG', `Strategy 2: direct parse failed, trying truncation fix`);
+    const fixed = tryFixTruncatedJSON(content.trim(), logger);
+    if (fixed !== null) {
+      logger.log('INFO', `Strategy 2 (truncation fix): SUCCESS`);
+      return fixed;
+    }
+    logger.log('WARN', `Strategy 2: all attempts failed`);
   }
 
   // 3. 直接尝试整个文本作为 JSON
   const directResult = tryParse(text.trim());
-  if (directResult !== null) return directResult;
+  if (directResult !== null) {
+    logger.log('INFO', `Strategy 3 (direct): SUCCESS`);
+    return directResult;
+  }
 
   // 4. 找到第一个 { 到最后一个 } 之间的内容
   const firstBrace = text.indexOf('{');
   const lastBrace = text.lastIndexOf('}');
+  logger.log('DEBUG', `Strategy 4: firstBrace=${firstBrace}, lastBrace=${lastBrace}`);
   if (firstBrace !== -1 && lastBrace > firstBrace) {
-    const result = tryParse(text.substring(firstBrace, lastBrace + 1));
-    if (result !== null) return result;
+    const substr = text.substring(firstBrace, lastBrace + 1);
+    logger.log('DEBUG', `Strategy 4: substring length=${substr.length}`);
+    const result = tryParse(substr);
+    if (result !== null) {
+      logger.log('INFO', `Strategy 4 (brace substring): SUCCESS`);
+      return result;
+    }
+    logger.log('WARN', `Strategy 4: brace substring parse failed`);
   }
 
   // 5. 清理 markdown 标记后再尝试
@@ -50,15 +84,23 @@ export function extractJSON(text: string): any | null {
     .replace(/```\s*$/gim, '')
     .trim();
   const cleanedResult = tryParse(cleaned);
-  if (cleanedResult !== null) return cleanedResult;
+  if (cleanedResult !== null) {
+    logger.log('INFO', `Strategy 5 (markdown cleanup): SUCCESS`);
+    return cleanedResult;
+  }
 
   // 6. 从第一个 { 开始，尝试修复截断的 JSON
   if (firstBrace !== -1) {
     const fromBrace = text.substring(firstBrace);
-    const fixed = tryFixTruncatedJSON(fromBrace);
-    if (fixed !== null) return fixed;
+    logger.log('DEBUG', `Strategy 6 (truncation fix from brace): content length=${fromBrace.length}`);
+    const fixed = tryFixTruncatedJSON(fromBrace, logger);
+    if (fixed !== null) {
+      logger.log('INFO', `Strategy 6 (truncation fix): SUCCESS`);
+      return fixed;
+    }
   }
 
+  logger.log('ERROR', `extractJSON: ALL 6 strategies failed. Input length=${text.length}`);
   return null;
 }
 
@@ -75,7 +117,7 @@ function tryParse(text: string): any | null {
  * 尝试修复被截断的 JSON
  * 策略：找到最后一个完整的数组元素，截断后闭合 JSON
  */
-function tryFixTruncatedJSON(text: string): any | null {
+function tryFixTruncatedJSON(text: string, logger: ExtractLogger = noop): any | null {
   // 尝试多个可能的数组字段名
   const arrayFields = ['"steps"', '"logicPoints"'];
   let arrayStart = -1;
@@ -84,7 +126,10 @@ function tryFixTruncatedJSON(text: string): any | null {
     arrayStart = text.indexOf(field);
     if (arrayStart !== -1) break;
   }
-  if (arrayStart === -1) return null;
+  if (arrayStart === -1) {
+    logger.log('DEBUG', `tryFixTruncatedJSON: no array field found ("steps"/"logicPoints")`);
+    return null;
+  }
 
   const bracketStart = text.indexOf('[', arrayStart);
   if (bracketStart === -1) return null;
@@ -122,7 +167,11 @@ function tryFixTruncatedJSON(text: string): any | null {
     }
   }
 
-  if (lastCompleteEnd === -1) return null;
+  if (lastCompleteEnd === -1) {
+    logger.log('WARN', `tryFixTruncatedJSON: no complete object found in array`);
+    return null;
+  }
+  logger.log('DEBUG', `tryFixTruncatedJSON: lastCompleteEnd=${lastCompleteEnd}, total text length=${text.length}, truncated=${text.length - lastCompleteEnd} chars`);
 
   // 在最后一个完整对象后截断，闭合数组和外层对象
   const truncated = text.substring(0, lastCompleteEnd + 1);
