@@ -79,20 +79,71 @@ export default function Home() {
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [validating, setValidating] = useState(false);
 
-  // 从校验结果中提取有问题的行号（信号检查 + 逻辑完整性检查）
-  const errorLines = useMemo<Set<number>>(() => {
-    const set = new Set<number>();
-    if (!validationResult) return set;
-    // 信号引用检查的问题行
-    for (const issue of validationResult.signalCheck.issues) {
-      if (issue.line) set.add(issue.line);
+  // === 实时信号引用检查（不走大模型） ===
+  // 1) 从信号清单解析出已定义的信号名集合
+  const definedSignalNames = useMemo<Set<string>>(() => {
+    const set = new Set<string>();
+    if (!signalsDef.trim()) return set;
+    for (const line of signalsDef.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const name = trimmed.split(/\s+/)[0];
+      if (name) set.add(name);
     }
+    return set;
+  }, [signalsDef]);
+
+  // 2) 实时扫描分析步骤中引用的信号，检查是否在信号清单中
+  const realtimeSignalIssues = useMemo<Array<{ line: number; signal: string }>>(() => {
+    if (definedSignalNames.size === 0 || !analyzeSteps.trim()) return [];
+    const issues: Array<{ line: number; signal: string }> = [];
+    const seen = new Set<string>(); // 避免同一信号重复报告
+
+    // 收集所有已定义信号名，用于构建正则：精确匹配这些信号名的变体 or 类似模式
+    // 策略：找所有看起来像信号名的词（大驼峰/含数字的标识符，至少3字符）
+    // 然后检查它是否在已定义集合中
+    const signalPattern = /\b([A-Z][a-zA-Z0-9]{2,})\b/g;
+
+    const lines = analyzeSteps.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let match;
+      signalPattern.lastIndex = 0;
+      while ((match = signalPattern.exec(line)) !== null) {
+        const word = match[1];
+        // 跳过常见的非信号关键词
+        if (/^(AND|OR|NOT|TRUE|FALSE|NULL|NaN|Infinity)$/i.test(word)) continue;
+        // 只对看起来确实像信号名的词报告（至少有一个小写字母+一个大写字母 or 含数字）
+        const looksLikeSignal = (/[a-z]/.test(word) && /[A-Z]/.test(word)) || /\d/.test(word);
+        if (!looksLikeSignal) continue;
+        // 如果在已定义信号集合中，跳过
+        if (definedSignalNames.has(word)) continue;
+        // 新发现的未定义信号
+        const key = `${i + 1}:${word}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          issues.push({ line: i + 1, signal: word });
+        }
+      }
+    }
+    return issues;
+  }, [analyzeSteps, definedSignalNames]);
+
+  // 实时信号错误的行号集合
+  const realtimeSignalErrorLines = useMemo<Set<number>>(() => {
+    return new Set(realtimeSignalIssues.map(i => i.line));
+  }, [realtimeSignalIssues]);
+
+  // 合并所有错误行号：实时信号检查 + LLM逻辑校验结果
+  const errorLines = useMemo<Set<number>>(() => {
+    const set = new Set<number>(realtimeSignalErrorLines);
+    if (!validationResult) return set;
     // 逻辑完整性检查的问题行
     for (const issue of validationResult.logicCheck.issues) {
       if (issue.line) set.add(issue.line);
     }
     return set;
-  }, [validationResult]);
+  }, [validationResult, realtimeSignalErrorLines]);
 
   // === 生成进度流 ===
   const [streamLog, setStreamLog] = useState<Array<{ type: 'progress' | 'token' | 'error'; text: string }>>([]);
@@ -870,6 +921,24 @@ export default function Home() {
                       errorLines={errorLines}
                     />
                     <p className="text-[10px] text-[var(--muted)] mt-2">格式: ## 步骤N: 标题 + 条件/动作列表</p>
+
+                    {/* 实时信号引用检查提示 */}
+                    {realtimeSignalIssues.length > 0 && (
+                      <div className="mt-2 px-2.5 py-1.5 bg-red-50 border border-red-200 rounded text-[11px] text-red-700 flex items-start gap-1.5 shrink-0">
+                        <XCircle size={13} className="shrink-0 mt-0.5 text-red-400" />
+                        <div className="flex-1 min-w-0">
+                          <span className="font-medium">未定义的信号引用：</span>
+                          <span className="flex flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
+                            {realtimeSignalIssues.map((issue, i) => (
+                              <span key={i}>
+                                <span className="inline-block px-1 py-0.5 rounded bg-red-100 text-red-600 text-[10px] font-mono mr-0.5">L{issue.line}</span>
+                                <span className="font-mono text-red-600">{issue.signal}</span>
+                              </span>
+                            ))}
+                          </span>
+                        </div>
+                      </div>
+                    )}
 
                     {/* 操作按钮 */}
                     <div className="flex gap-2 mt-3 shrink-0">
