@@ -6,6 +6,7 @@
  */
 import { FlowNode, FlowEdge, FlowChart } from './types';
 import { WorkflowNode, WorkflowDefinition, ModuleName } from './workflow-schema';
+import { dagreLayout } from './dagre-layout';
 
 let nodeCounter = 0;
 let edgeCounter = 0;
@@ -118,12 +119,17 @@ function processSteps(
 
     const conditionText = (nodeType === 'condition') ? buildConditionText(step) : undefined;
 
+    const modulePrefix = getModulePrefix(step.module);
+    const paramText   = summarizeParams(step);
+
     nodes.push({
       id: flowNodeId,
       type: nodeType,
-      label: step.label || getModulePrefix(step.module),
-      description: step.description || `${getModulePrefix(step.module)}: ${summarizeParams(step)}`,
+      label: step.label || modulePrefix,
+      description: step.description || paramText,
       conditionText,
+      moduleType: modulePrefix,
+      paramsSummary: buildParamsSummary(step),
       nodeRef: step.id,
       position: { x: 0, y: 0 },
     });
@@ -165,19 +171,19 @@ function processSteps(
         const falseBranch = step.branches['false'] || step.branches['否'] || [];
 
         if (trueBranch.length > 0) {
-          const truePending: PendingEdge[] = [{ source: flowNodeId, label: '是', type: 'true' }];
+          const truePending: PendingEdge[] = [{ source: flowNodeId, label: 'true', type: 'true' }];
           processSteps(trueBranch, nodes, edges, truePending);
           pending.push(...truePending);
         } else {
-          pending.push({ source: flowNodeId, label: '是', type: 'true' });
+          pending.push({ source: flowNodeId, label: 'true', type: 'true' });
         }
 
         if (falseBranch.length > 0) {
-          const falsePending: PendingEdge[] = [{ source: flowNodeId, label: '否', type: 'false' }];
+          const falsePending: PendingEdge[] = [{ source: flowNodeId, label: 'false', type: 'false' }];
           processSteps(falseBranch, nodes, edges, falsePending);
           pending.push(...falsePending);
         } else {
-          pending.push({ source: flowNodeId, label: '否', type: 'false' });
+          pending.push({ source: flowNodeId, label: 'false', type: 'false' });
         }
       } else {
         // switchValue 等多路分支
@@ -200,68 +206,156 @@ function processSteps(
   }
 }
 
-/** 参数摘要 */
+/** 按模块类型生成结构化参数摘要（显示在节点卡片上） */
 function summarizeParams(node: WorkflowNode): string {
+  const p = node.params || {};
+
+  switch (node.module) {
+    // ── 跳变检测 ──
+    case 'detectTransition':
+      if (p.signal !== undefined) {
+        const from = p.from !== undefined ? p.from : '?';
+        const to   = p.to   !== undefined ? p.to   : '?';
+        return `${p.signal}: ${from} → ${to}`;
+      }
+      break;
+    case 'detectMultiTransition':
+      if (p.signals) {
+        const count = Array.isArray(p.signals) ? p.signals.length : '?';
+        return `${count}个信号跳变${p.logic ? `(${p.logic.toUpperCase()})` : ''}`;
+      }
+      break;
+    case 'detectSequence':
+      if (p.sequence) {
+        const seq = Array.isArray(p.sequence)
+          ? p.sequence.map((s: any) => `${s.signal}=${s.value}`).join(' → ')
+          : String(p.sequence);
+        return `序列: ${seq}`;
+      }
+      break;
+
+    // ── 统计分析 ──
+    case 'aggregate':
+      if (p.signal) {
+        return `${p.signal} → ${p.method || 'sum'}`;
+      }
+      break;
+    case 'detectDuration':
+      if (p.signal !== undefined) {
+        const op  = p.operator || '>=';
+        const dur = p.duration !== undefined ? `${p.duration}s` : '?';
+        return `${p.signal} ${op} ${p.value ?? '?'}，持续 ${dur}`;
+      }
+      break;
+    case 'countOccurrences':
+      if (p.signal !== undefined) {
+        const threshold = p.threshold !== undefined ? ` ≥ ${p.threshold}次` : '';
+        return `${p.signal}${threshold}`;
+      }
+      break;
+    case 'detectStable':
+      if (p.signal !== undefined) {
+        const dur = p.duration !== undefined ? `${p.duration}s` : '?';
+        return `${p.signal} 稳定 ${dur}`;
+      }
+      break;
+    case 'detectOscillation':
+      if (p.signal !== undefined) {
+        const times = p.times !== undefined ? ` ${p.times}次` : '';
+        return `${p.signal} 抖动${times}`;
+      }
+      break;
+    case 'computeRate':
+      if (p.signal !== undefined) {
+        return `Δ${p.signal}${p.window ? ` / ${p.window}s` : ''}`;
+      }
+      break;
+
+    // ── 搜索 ──
+    case 'findFirst':
+    case 'findAll':
+      if (p.signal !== undefined && p.operator !== undefined) {
+        return `${p.signal} ${p.operator} ${p.value ?? '?'}`;
+      }
+      if (p.signal) return p.signal;
+      break;
+
+    // ── 比较 / 分组 ──
+    case 'compareSignals':
+      if (p.signalA && p.signalB) {
+        return `${p.signalA} vs ${p.signalB}`;
+      }
+      break;
+    case 'groupByState':
+      if (p.signal) {
+        return `按 ${p.signal} 分组`;
+      }
+      break;
+
+    // ── 输出 ──
+    case 'output':
+      if (p.key) {
+        return `结果键: ${p.key}`;
+      }
+      break;
+
+    // ── 循环容器 ──
+    case 'scanAll':
+      return '遍历全部帧';
+    case 'forEachEvent':
+      return p.events ? `遍历: ${p.events}` : '遍历事件列表';
+    case 'loopScan':
+      return p.step ? `步长: ${p.step}帧` : '步进扫描';
+    case 'slidingWindow':
+      if (p.window || p.step) {
+        return `窗口: ${p.window ?? '?'}, 步长: ${p.step ?? '?'}`;
+      }
+      break;
+
+    // ── 条件 ──
+    case 'checkValue':
+    case 'condition':
+      if (p.signal && p.operator !== undefined) {
+        return `${p.signal} ${p.operator} ${p.value ?? '?'}`;
+      }
+      break;
+    case 'checkMultiValues':
+      if (p.conditions) {
+        const logic = p.logic?.toUpperCase() || 'AND';
+        return `${p.conditions.length}个条件 (${logic})`;
+      }
+      break;
+    case 'checkTimeRange':
+      if (p.start !== undefined || p.end !== undefined) {
+        return `时间: ${p.start ?? '?'} ~ ${p.end ?? '?'}`;
+      }
+      break;
+    case 'switchValue':
+      if (p.signal) {
+        return `分支信号: ${p.signal}`;
+      }
+      break;
+
+    default:
+      break;
+  }
+
+  // 通用兜底：最多展示 2 个关键字段
+  if (p.signal) return p.signal;
+  const entries = Object.entries(p).filter(([, v]) => v !== undefined && v !== null);
+  return entries.slice(0, 2).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(', ');
+}
+
+/** 生成用于 Tooltip 的完整参数文本 */
+function buildParamsSummary(node: WorkflowNode): string {
   const p = node.params;
   if (!p || Object.keys(p).length === 0) return '';
-
-  if (p.signal) {
-    if (p.from !== undefined && p.to !== undefined) {
-      return `${p.signal}: ${p.from} → ${p.to}`;
-    }
-    if (p.operator && p.value !== undefined) {
-      return `${p.signal} ${p.operator} ${p.value}`;
-    }
-    return p.signal;
-  }
-  if (p.conditions) {
-    return `${p.conditions.length}个条件`;
-  }
-  return Object.entries(p).slice(0, 2).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ');
+  return Object.entries(p)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`)
+    .join('\n');
 }
 
-/** 自动布局（BFS 层级布局） */
-function autoLayout(nodes: FlowNode[], edges: FlowEdge[]) {
-  if (nodes.length === 0) return;
-
-  const startNode = nodes.find(n => n.type === 'start') || nodes[0];
-  const adjacency = new Map<string, string[]>();
-  for (const edge of edges) {
-    if (edge.type === 'loop-back') continue;
-    if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
-    adjacency.get(edge.source)!.push(edge.target);
-  }
-
-  const levels = new Map<string, number>();
-  const queue = [startNode.id];
-  levels.set(startNode.id, 0);
-
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    const level = levels.get(current) || 0;
-    const children = adjacency.get(current) || [];
-
-    for (const child of children) {
-      if (!levels.has(child)) {
-        levels.set(child, level + 1);
-        queue.push(child);
-      }
-    }
-  }
-
-  const maxLevel = Math.max(...Array.from(levels.values()), 0);
-  for (const node of nodes) {
-    if (!levels.has(node.id)) levels.set(node.id, maxLevel + 1);
-  }
-
-  const levelCounts = new Map<number, number>();
-  for (const node of nodes) {
-    const level = levels.get(node.id) || 0;
-    const col = levelCounts.get(level) || 0;
-    levelCounts.set(level, col + 1);
-    node.position = { x: 250 + col * 250, y: 60 + level * 120 };
-  }
-}
 
 /** 将 WorkflowDefinition 转换为 FlowChart */
 export function workflowToFlowChart(def: WorkflowDefinition): FlowChart {
@@ -299,6 +393,6 @@ export function workflowToFlowChart(def: WorkflowDefinition): FlowChart {
   });
   flushPending(pending, endId, edges);
 
-  autoLayout(nodes, edges);
+  dagreLayout(nodes, edges);
   return { nodes, edges };
 }
