@@ -6,6 +6,7 @@
  */
 import { FlowNode, FlowEdge, FlowChart } from './types';
 import { WorkflowNode, WorkflowDefinition, ModuleName } from './workflow-schema';
+import { dagreLayout } from './dagre-layout';
 
 let nodeCounter = 0;
 let edgeCounter = 0;
@@ -220,48 +221,6 @@ function summarizeParams(node: WorkflowNode): string {
   return Object.entries(p).slice(0, 2).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ');
 }
 
-/** 自动布局（BFS 层级布局） */
-function autoLayout(nodes: FlowNode[], edges: FlowEdge[]) {
-  if (nodes.length === 0) return;
-
-  const startNode = nodes.find(n => n.type === 'start') || nodes[0];
-  const adjacency = new Map<string, string[]>();
-  for (const edge of edges) {
-    if (edge.type === 'loop-back') continue;
-    if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
-    adjacency.get(edge.source)!.push(edge.target);
-  }
-
-  const levels = new Map<string, number>();
-  const queue = [startNode.id];
-  levels.set(startNode.id, 0);
-
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    const level = levels.get(current) || 0;
-    const children = adjacency.get(current) || [];
-
-    for (const child of children) {
-      if (!levels.has(child)) {
-        levels.set(child, level + 1);
-        queue.push(child);
-      }
-    }
-  }
-
-  const maxLevel = Math.max(...Array.from(levels.values()), 0);
-  for (const node of nodes) {
-    if (!levels.has(node.id)) levels.set(node.id, maxLevel + 1);
-  }
-
-  const levelCounts = new Map<number, number>();
-  for (const node of nodes) {
-    const level = levels.get(node.id) || 0;
-    const col = levelCounts.get(level) || 0;
-    levelCounts.set(level, col + 1);
-    node.position = { x: 250 + col * 250, y: 60 + level * 120 };
-  }
-}
 
 /** 将 WorkflowDefinition 转换为 FlowChart */
 export function workflowToFlowChart(def: WorkflowDefinition): FlowChart {
@@ -299,6 +258,6 @@ export function workflowToFlowChart(def: WorkflowDefinition): FlowChart {
   });
   flushPending(pending, endId, edges);
 
-  autoLayout(nodes, edges);
+  dagreLayout(nodes, edges);
   return { nodes, edges };
 }
