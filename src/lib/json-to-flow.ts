@@ -165,7 +165,8 @@ function processSteps(
     else if (step.branches && Object.keys(step.branches).length > 0) {
       const branchKeys = Object.keys(step.branches);
 
-      if (step.module === 'condition' || step.module === 'checkValue' || step.module === 'checkMultiValues' || step.module === 'checkTimeRange') {
+      const hasTrueFalse = branchKeys.includes('true') || branchKeys.includes('是') || branchKeys.includes('false') || branchKeys.includes('否');
+      if (hasTrueFalse) {
         // 条件分支：true/false
         const trueBranch = step.branches['true'] || step.branches['是'] || [];
         const falseBranch = step.branches['false'] || step.branches['否'] || [];
