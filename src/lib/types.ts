@@ -15,6 +15,10 @@ export interface FlowNode {
   description: string;
   /** 条件节点的条件表达式文本 */
   conditionText?: string;
+  /** 模块类型名称（用于节点卡片的 badge 标签，如"跳变检测"） */
+  moduleType?: string;
+  /** 用于 Tooltip 展示的完整参数摘要文本 */
+  paramsSummary?: string;
   position: { x: number; y: number };
 }
 

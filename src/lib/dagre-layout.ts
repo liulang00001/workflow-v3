@@ -2,25 +2,62 @@
  * Dagre 自动布局
  *
  * 使用 Sugiyama 算法进行层级布局，自动最小化边交叉，
- * 替代原有简单 BFS 布局。供 json-to-flow 和 ast-parser 共用。
+ * 替代原有简单 BFS 布局。供 json-to-flow 使用。
  */
 import dagre from '@dagrejs/dagre';
 import { FlowNode, FlowEdge } from './types';
 
-/** 节点尺寸估算 */
-function estimateNodeSize(node: FlowNode): { width: number; height: number } {
-  switch (node.type) {
-    case 'start':
-    case 'end':
-      return { width: 100, height: 36 };
-    case 'condition':
-      return { width: 160, height: 52 };
-    case 'loop':
-      return { width: 150, height: 44 };
-    case 'action':
-    default:
-      return { width: 150, height: 48 };
+/** 估算单行文本渲染宽度（px），基于字符类型粗略计算 */
+function estimateTextWidth(text: string, fontSize: number): number {
+  let width = 0;
+  for (const ch of text) {
+    // 中文/全角字符约等于 fontSize，ASCII 约 0.55 * fontSize
+    width += ch.charCodeAt(0) > 127 ? fontSize : fontSize * 0.55;
   }
+  return width;
+}
+
+/** 根据节点实际文本内容动态估算渲染尺寸 */
+function estimateNodeSize(node: FlowNode): { width: number; height: number } {
+  const padX = 24;  // 左右 padding (px 10 * 2 + border/margin)
+  const padY = 16;  // 上下 padding
+  const lineHeight = 16;
+  const minW = 140;
+  const maxW = 220;
+
+  if (node.type === 'start' || node.type === 'end') {
+    return { width: 100, height: 36 };
+  }
+
+  // 计算各行文本宽度
+  let contentWidth = 0;
+  let lines = 0;
+
+  // moduleType badge (9px)
+  if (node.moduleType) {
+    contentWidth = Math.max(contentWidth, estimateTextWidth(node.moduleType, 9));
+    lines += 1;
+  }
+
+  // label (11px bold)
+  contentWidth = Math.max(contentWidth, estimateTextWidth(node.label, 11));
+  lines += 1;
+
+  // description / conditionText (10px) — 可能换行
+  const detailText = node.conditionText || node.description || '';
+  if (detailText) {
+    const detailW = estimateTextWidth(detailText, 10);
+    // 文本会在 maxW 处自动换行，估算行数
+    const effectiveMaxW = maxW - padX;
+    const wrapLines = Math.ceil(detailW / effectiveMaxW);
+    contentWidth = Math.max(contentWidth, Math.min(detailW, effectiveMaxW));
+    lines += wrapLines;
+  }
+
+  const width = Math.max(minW, Math.min(maxW, contentWidth + padX));
+  const height = Math.max(40, padY + lines * lineHeight);
+
+  return { width, height };
 }
 
 /**

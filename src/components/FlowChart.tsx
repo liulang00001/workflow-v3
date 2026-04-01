@@ -8,6 +8,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  MarkerType,
   useNodesState,
   useEdgesState,
   NodeProps,
@@ -38,27 +39,56 @@ function EndNode({ data }: NodeProps) {
 }
 
 function ConditionNode({ data }: NodeProps) {
+  const tooltip = [data.moduleType, data.paramsSummary].filter(Boolean).join('\n');
   return (
-    <div className="px-3 py-2 border-2 border-amber-500 bg-amber-50 text-amber-900 text-xs text-center"
-         style={{ transform: 'rotate(0deg)', borderRadius: '4px', minWidth: 120 }}>
+    <div
+      title={tooltip as string}
+      className="border-2 border-amber-500 bg-amber-50 text-amber-900 text-xs text-center"
+      style={{ borderRadius: '4px', minWidth: 140, maxWidth: 220, padding: '6px 10px' }}
+    >
       <Handle type="target" position={Position.Top} className="!bg-amber-500" />
-      <div className="font-bold">{data.label as string}</div>
-      {typeof data.conditionText === 'string' && data.conditionText && (
-        <div className="text-[10px] mt-1 text-amber-700 truncate max-w-[160px]">{data.conditionText}</div>
+      {/* 模块类型 badge */}
+      {typeof data.moduleType === 'string' && data.moduleType && (
+        <div className="text-[9px] font-semibold text-amber-500 uppercase tracking-wide mb-0.5">
+          {data.moduleType as string}
+        </div>
       )}
-      <Handle type="source" position={Position.Bottom} id="true" className="!bg-green-500 !left-[30%]" />
-      <Handle type="source" position={Position.Bottom} id="false" className="!bg-red-500 !left-[70%]" />
+      {/* 节点标签 */}
+      <div className="font-bold text-[11px] leading-tight">{data.label as string}</div>
+      {/* 条件表达式 */}
+      {typeof data.conditionText === 'string' && data.conditionText && (
+        <div className="text-[10px] mt-1 text-amber-700 font-mono leading-snug whitespace-pre-wrap break-all">
+          {data.conditionText as string}
+        </div>
+      )}
+      <Handle type="source" position={Position.Bottom} id="true"  className="!bg-green-500 !left-[30%]" />
+      <Handle type="source" position={Position.Bottom} id="false" className="!bg-red-500  !left-[70%]" />
     </div>
   );
 }
 
 function ActionNode({ data }: NodeProps) {
+  const tooltip = [data.moduleType, data.paramsSummary].filter(Boolean).join('\n');
   return (
-    <div className="px-3 py-2 rounded border-2 border-blue-400 bg-blue-50 text-blue-900 text-xs text-center min-w-[100px]">
+    <div
+      title={tooltip as string}
+      className="rounded border-2 border-blue-400 bg-blue-50 text-blue-900 text-xs text-center"
+      style={{ minWidth: 140, maxWidth: 220, padding: '6px 10px' }}
+    >
       <Handle type="target" position={Position.Top} className="!bg-blue-400" />
-      <div className="font-bold">{data.label as string}</div>
+      {/* 模块类型 badge */}
+      {typeof data.moduleType === 'string' && data.moduleType && (
+        <div className="text-[9px] font-semibold text-blue-400 uppercase tracking-wide mb-0.5">
+          {data.moduleType as string}
+        </div>
+      )}
+      {/* 节点标签 */}
+      <div className="font-bold text-[11px] leading-tight">{data.label as string}</div>
+      {/* 处理逻辑摘要 */}
       {typeof data.description === 'string' && data.description && (
-        <div className="text-[10px] mt-1 text-blue-600 truncate max-w-[160px]">{data.description}</div>
+        <div className="text-[10px] mt-1 text-blue-600 leading-snug whitespace-pre-wrap break-all">
+          {data.description as string}
+        </div>
       )}
       <Handle type="source" position={Position.Bottom} className="!bg-blue-400" />
     </div>
@@ -66,12 +96,30 @@ function ActionNode({ data }: NodeProps) {
 }
 
 function LoopNode({ data }: NodeProps) {
+  const tooltip = [data.moduleType, data.paramsSummary].filter(Boolean).join('\n');
   return (
-    <div className="px-3 py-2 rounded border-2 border-purple-500 bg-purple-50 text-purple-900 text-xs text-center min-w-[120px]">
+    <div
+      title={tooltip as string}
+      className="rounded border-2 border-purple-500 bg-purple-50 text-purple-900 text-xs text-center"
+      style={{ minWidth: 140, maxWidth: 220, padding: '6px 10px' }}
+    >
       <Handle type="target" position={Position.Top} className="!bg-purple-500" />
-      <div className="font-bold flex items-center justify-center gap-1">
-        <span>🔄</span> {data.label as string}
+      {/* 模块类型 badge */}
+      {typeof data.moduleType === 'string' && data.moduleType && (
+        <div className="text-[9px] font-semibold text-purple-400 uppercase tracking-wide mb-0.5">
+          {data.moduleType as string}
+        </div>
+      )}
+      {/* 节点标签 */}
+      <div className="font-bold text-[11px] leading-tight flex items-center justify-center gap-1">
+        <span>🔄</span>{data.label as string}
       </div>
+      {/* 遍历目标摘要 */}
+      {typeof data.description === 'string' && data.description && (
+        <div className="text-[10px] mt-1 text-purple-600 leading-snug whitespace-pre-wrap break-all">
+          {data.description as string}
+        </div>
+      )}
       <Handle type="source" position={Position.Bottom} className="!bg-purple-500" />
     </div>
   );
@@ -99,23 +147,24 @@ export default function FlowChartView({ flowChart, onNodeClick }: FlowChartProps
       id: n.id,
       type: n.type,
       position: n.position,
-      data: { label: n.label, description: n.description, conditionText: n.conditionText, codeRange: n.codeRange },
+      data: { label: n.label, description: n.description, conditionText: n.conditionText, codeRange: n.codeRange, moduleType: n.moduleType, paramsSummary: n.paramsSummary },
     }))
   , [flowChart.nodes]);
 
   const initialEdges: Edge[] = useMemo(() =>
-    flowChart.edges.map(e => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      label: e.label,
-      animated: e.type === 'loop-back',
-      style: {
-        stroke: e.type === 'true' ? '#16a34a' : e.type === 'false' ? '#dc2626' : e.type === 'loop-back' ? '#9333ea' : '#6b7280',
-        strokeWidth: 2,
-      },
-      labelStyle: { fontSize: 10 },
-    }))
+    flowChart.edges.map(e => {
+      const color = e.type === 'true' ? '#16a34a' : e.type === 'false' ? '#dc2626' : '#60a5fa';
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        label: e.label,
+        animated: e.type === 'loop-back',
+        style: { stroke: color, strokeWidth: 2 },
+        labelStyle: { fontSize: 10 },
+        markerEnd: { type: MarkerType.ArrowClosed, color, width: 16, height: 16 },
+      };
+    })
   , [flowChart.edges]);
 
   const [nodes, , onNodesChange] = useNodesState(initialNodes);
